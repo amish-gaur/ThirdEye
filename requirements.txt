@@ -1,5 +1,5 @@
-# SafeWatch — action router (Person 2)
-# Targets Python 3.11+. No vision deps here; this branch is pure orchestration.
+# SafeWatch — combined backend branch
+# Targets Python 3.11+. Includes action-router + vision-pipeline deps.
 
 # External APIs
 anthropic>=0.40.0
@@ -12,6 +12,14 @@ uvicorn[standard]>=0.30
 pydantic>=2.7
 python-dotenv>=1.0
 requests>=2.32
+
+# Vision pipeline
+opencv-python>=4.10
+torch>=2.5
+torchvision>=0.20
+transformers>=4.55
+ultralytics>=8.3
+pillow>=10.4
 
 # Dev / tests
 pytest>=8.0
