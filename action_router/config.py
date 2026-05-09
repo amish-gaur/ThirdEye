@@ -60,7 +60,20 @@ class Config:
     # Behavior knobs
     dry_run: bool = _bool("DRY_RUN", False)
     use_claude: bool = _bool("USE_CLAUDE", True)
-    use_elevenlabs: bool = _bool("USE_ELEVENLABS", True)
+    # Default false: Twilio <Say> works without keys; <Play> needs ElevenLabs + public URL.
+    use_elevenlabs: bool = _bool("USE_ELEVENLABS", False)
+
+    def elevenlabs_play_enabled(self) -> bool:
+        """True only when MP3 <Play> can actually work (key + Twilio-reachable base URL)."""
+        if not self.use_elevenlabs:
+            return False
+        key = (self.elevenlabs_api_key or "").strip()
+        if not key or key in {"...", "ELEVENLABS_API_KEY"}:
+            return False
+        base = (self.public_base_url or "").lower().rstrip("/")
+        if "127.0.0.1" in base or "localhost" in base:
+            return False
+        return True
 
     def media_url(self, filename: str) -> str:
         return f"{self.public_base_url}/media/{filename}"

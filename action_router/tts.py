@@ -46,18 +46,18 @@ def synthesize_mp3(
             model_id=cfg.elevenlabs_model_id,
             output_format=cfg.elevenlabs_output_format,
         )
+        bytes_written = 0
+        with out_path.open("wb") as f:
+            for chunk in audio_iter:
+                if not chunk:
+                    continue
+                if isinstance(chunk, str):
+                    chunk = chunk.encode()
+                f.write(chunk)
+                bytes_written += len(chunk)
     except Exception as exc:
+        out_path.unlink(missing_ok=True)
         raise RuntimeError(f"ElevenLabs convert() failed: {exc}") from exc
-
-    bytes_written = 0
-    with out_path.open("wb") as f:
-        for chunk in audio_iter:
-            if not chunk:
-                continue
-            if isinstance(chunk, str):
-                chunk = chunk.encode()
-            f.write(chunk)
-            bytes_written += len(chunk)
 
     if bytes_written == 0:
         out_path.unlink(missing_ok=True)

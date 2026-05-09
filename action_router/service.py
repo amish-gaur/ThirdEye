@@ -29,6 +29,7 @@ def create_app() -> FastAPI:
             "dry_run": CONFIG.dry_run,
             "use_claude": CONFIG.use_claude,
             "use_elevenlabs": CONFIG.use_elevenlabs,
+            "elevenlabs_play_enabled": CONFIG.elevenlabs_play_enabled(),
             "public_base_url": CONFIG.public_base_url,
             "twilio_configured": bool(CONFIG.twilio_account_sid),
         }

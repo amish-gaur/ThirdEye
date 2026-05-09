@@ -151,7 +151,14 @@ def _tier_emergency(event: Dict[str, Any], cfg: Config, result: ActionResult) ->
 def _try_synthesize(
     script: str, cfg: Config, result: ActionResult, prefix: str = "alert_"
 ) -> Optional[str]:
-    if not script or not cfg.use_elevenlabs:
+    if not script:
+        return None
+    if not cfg.elevenlabs_play_enabled():
+        if cfg.use_elevenlabs:
+            log.warning(
+                "USE_ELEVENLABS=true but <Play> disabled: need ELEVENLABS_API_KEY and "
+                "PUBLIC_BASE_URL reachable from the internet (not localhost). Using Twilio <Say>."
+            )
         return None
     try:
         path = synthesize_mp3(script, cfg)

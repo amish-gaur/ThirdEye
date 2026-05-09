@@ -67,6 +67,7 @@ def test_tier3_with_elevenlabs_uses_play(dry_config, mocker, tmp_path) -> None:
 
     cfg = dry_config
     object.__setattr__(cfg, "use_elevenlabs", True)
+    object.__setattr__(cfg, "elevenlabs_api_key", "test-el-key")
 
     fake_mp3 = tmp_path / "media" / "alert_x.mp3"
     fake_mp3.parent.mkdir(parents=True, exist_ok=True)
@@ -86,6 +87,7 @@ def test_tts_failure_falls_back_to_say(dry_config, mocker) -> None:
 
     cfg = dry_config
     object.__setattr__(cfg, "use_elevenlabs", True)
+    object.__setattr__(cfg, "elevenlabs_api_key", "test-el-key")
 
     mocker.patch.object(
         router_mod, "synthesize_mp3", side_effect=RuntimeError("boom")
