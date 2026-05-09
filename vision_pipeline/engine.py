@@ -31,7 +31,7 @@ from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
 from ultralytics import YOLO
 
 from .config import CONFIG, Config
-from .events import VISION_LANGUAGE_PROMPT, build_event, parse_classifier_output
+from .events import VISION_LANGUAGE_PROMPT, build_event, evaluate_classifier_output
 from .publisher import post_event
 
 FRAME_BUFFER_MAXLEN = 150
@@ -752,8 +752,8 @@ class VisionEngine:
                     "time_elapsed": "ignored",
                 }
             )
-            parsed = parse_classifier_output(raw_answer, time_elapsed_seconds)
-            return parsed, raw_answer
+            result = evaluate_classifier_output(raw_answer, time_elapsed_seconds)
+            return result.payload, raw_answer
 
         image = frame_to_pil(self._downscale_frame_for_qwen(frame_bgr))
         messages = [
@@ -793,10 +793,17 @@ class VisionEngine:
             clean_up_tokenization_spaces=False,
         )[0].strip()
         self._empty_mps_cache()
-        parsed = parse_classifier_output(raw_answer, time_elapsed_seconds)
-        if parsed is None:
-            log.warning("Qwen returned invalid classifier output: %r", raw_answer)
-        return parsed, raw_answer
+        result = evaluate_classifier_output(raw_answer, time_elapsed_seconds)
+        if not result.ok:
+            log.warning(
+                "Qwen output rejected [%s]: %s | raw=%r",
+                result.status,
+                result.reason,
+                raw_answer,
+            )
+        elif result.status == "degrade":
+            log.info("Qwen output degraded to tier 1: %s", result.reason)
+        return result.payload, raw_answer
 
     def _submit_classification(self, request: ClassificationRequest) -> bool:
         if self.config.mock_classifier:
