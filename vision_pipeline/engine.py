@@ -26,6 +26,8 @@ FRAME_BUFFER_MAXLEN = 150
 TARGET_FPS = 10
 FRAME_INTERVAL_SECONDS = 1.0 / TARGET_FPS
 PERSON_CLASS_ID = 0
+BOX_CLASS_IDS = (24, 26, 28)  # backpack, handbag, suitcase
+TRIGGER_CLASS_IDS = (PERSON_CLASS_ID,) + BOX_CLASS_IDS
 CONSECUTIVE_PERSON_FRAMES = 2
 
 log = logging.getLogger("vision_pipeline.engine")
@@ -73,7 +75,7 @@ class VisionEngine:
         self.source = source
         self.show_window = show_window
         self.frame_buffer: deque[BufferedFrame] = deque(maxlen=FRAME_BUFFER_MAXLEN)
-        self.person_streak = 0
+        self.trigger_streak = 0
         self.frame_seq = 0
         self.last_classification_at = 0.0
         self.classification_queue: queue.Queue[ClassificationRequest | None] = queue.Queue(
@@ -157,14 +159,18 @@ class VisionEngine:
 
                 if self._classification_busy():
                     detected_classes = []
-                    self.person_streak = 0
+                    self.trigger_streak = 0
                 else:
                     detected_classes = self._detected_classes(frame)
                     person_detected = "person" in detected_classes
-                    self.person_streak = self.person_streak + 1 if person_detected else 0
+                    box_detected = bool(
+                        set(detected_classes) & {"backpack", "handbag", "suitcase"}
+                    )
+                    triggered = person_detected and box_detected
+                    self.trigger_streak = self.trigger_streak + 1 if triggered else 0
 
                 if (
-                    self.person_streak >= CONSECUTIVE_PERSON_FRAMES
+                    self.trigger_streak >= CONSECUTIVE_PERSON_FRAMES
                     and self._classification_due(captured_at)
                 ):
                     latest_frame = self.frame_buffer[-1]
@@ -176,7 +182,7 @@ class VisionEngine:
                     )
                     if self._submit_classification(request):
                         self.last_classification_at = captured_at
-                    self.person_streak = 0
+                    self.trigger_streak = 0
 
                 if self.show_window:
                     cv2.imshow("SafeWatch Vision Engine", frame)
@@ -193,7 +199,7 @@ class VisionEngine:
     def _detected_classes(self, frame_bgr: Any) -> list[str]:
         results = self.yolo.predict(
             source=frame_bgr,
-            classes=[PERSON_CLASS_ID],
+            classes=list(TRIGGER_CLASS_IDS),
             conf=self.config.person_confidence,
             device=self.device,
             imgsz=self.config.yolo_input_size,

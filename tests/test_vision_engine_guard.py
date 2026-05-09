@@ -1,5 +1,10 @@
 from vision_pipeline.config import Config
-from vision_pipeline.engine import ClassificationRequest, VisionEngine
+from vision_pipeline.engine import (
+    BOX_CLASS_IDS,
+    ClassificationRequest,
+    PERSON_CLASS_ID,
+    VisionEngine,
+)
 
 
 def _cfg(**overrides):
@@ -76,6 +81,28 @@ def test_submit_classification_marks_in_flight(mocker) -> None:
 
     assert submitted is True
     assert engine._classification_busy() is True
+
+
+def test_detected_classes_requests_person_and_carryable_objects(mocker) -> None:
+    mocker.patch("vision_pipeline.engine.require_mps", return_value="mps")
+    yolo_cls = mocker.patch("vision_pipeline.engine.YOLO")
+
+    engine = VisionEngine(_cfg(mock_classifier=True), source=0, show_window=False)
+    yolo_result = mocker.Mock()
+    yolo_result.names = {0: "person", 24: "backpack", 26: "handbag", 28: "suitcase"}
+    yolo_result.boxes = mocker.Mock()
+    yolo_result.boxes.__len__ = mocker.Mock(return_value=2)
+    yolo_result.boxes.cls.tolist.return_value = [0, 24]
+    yolo_cls.return_value.predict.return_value = [yolo_result]
+
+    detected = engine._detected_classes("frame")
+
+    assert detected == ["backpack", "person"]
+    yolo_cls.return_value.predict.assert_called_once()
+    assert yolo_cls.return_value.predict.call_args.kwargs["classes"] == [
+        PERSON_CLASS_ID,
+        *BOX_CLASS_IDS,
+    ]
 
 
 def test_mock_classifier_skips_model_load(mocker) -> None:
