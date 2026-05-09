@@ -17,9 +17,9 @@ def _wrap(payload_str: str) -> str:
 
 def test_accepts_plain_clean_json() -> None:
     raw = (
-        '{"tier": 3, "confidence": 0.82, '
-        '"suspect_description": "person carrying a black backpack", '
-        '"one_line_summary": "person approaches porch with bag", '
+        '{"tier": 3, "behavior_pattern": "taking_item", "confidence": 0.82, '
+        '"suspect_description": "young man in black jacket carrying a backpack", '
+        '"one_line_summary": "person took a package from the porch and walked off", '
         '"time_elapsed": "ignored"}'
     )
     result = evaluate_classifier_output(raw, 1.5)
@@ -33,8 +33,9 @@ def test_accepts_smart_quotes_and_code_fence() -> None:
         "```json\n"
         "{"
         "\u201ctier\u201d: 2, "
+        "\u201cbehavior_pattern\u201d: \u201cloitering\u201d, "
         "\u201cconfidence\u201d: 0.6, "
-        "\u201csuspect_description\u201d: \u201cperson lingering near door\u201d, "
+        "\u201csuspect_description\u201d: \u201cman in red hoodie lingering near door\u201d, "
         "\u201cone_line_summary\u201d: \u201cperson stays at entry zone\u201d, "
         "\u201ctime_elapsed\u201d: \u201cignored\u201d"
         "}\n"
@@ -47,9 +48,9 @@ def test_accepts_smart_quotes_and_code_fence() -> None:
 
 def test_accepts_tier_as_string_label() -> None:
     raw = (
-        '{"tier": "ALERT", "confidence": 90, '
-        '"suspect_description": "person with bag", '
-        '"one_line_summary": "person at porch with bag"}'
+        '{"tier": "ALERT", "behavior_pattern": "taking_item", "confidence": 90, '
+        '"suspect_description": "young woman in green jacket with backpack", '
+        '"one_line_summary": "person grabbed a package from the porch"}'
     )
     result = evaluate_classifier_output(raw, 1.0)
     assert result.status == "accept", result.reason
@@ -60,8 +61,8 @@ def test_accepts_tier_as_string_label() -> None:
 
 def test_accepts_alias_keys_summary_and_description() -> None:
     raw = (
-        '{"tier": 1, "confidence": 0.4, '
-        '"description": "person walks past", '
+        '{"tier": 1, "behavior_pattern": "walking_through", "confidence": 0.4, '
+        '"description": "young woman in blue jacket walking past", '
         '"summary": "passerby on sidewalk"}'
     )
     result = evaluate_classifier_output(raw, 0.25)
@@ -70,9 +71,9 @@ def test_accepts_alias_keys_summary_and_description() -> None:
 
 def test_accepts_trailing_commas() -> None:
     raw = (
-        '{"tier": 3, "confidence": 0.7, '
-        '"suspect_description": "person with backpack", '
-        '"one_line_summary": "person near door with bag", '
+        '{"tier": 3, "behavior_pattern": "taking_item", "confidence": 0.7, '
+        '"suspect_description": "young man in black hoodie with backpack", '
+        '"one_line_summary": "person reached for a package on the porch", '
         '"time_elapsed": "x",}'
     )
     result = evaluate_classifier_output(raw, 1.0)
@@ -131,9 +132,9 @@ def test_low_value_output_is_degraded_to_tier_one() -> None:
 
 def test_parse_classifier_output_returns_payload_for_accept_or_degrade() -> None:
     raw_accept = (
-        '{"tier": 3, "confidence": 0.7, '
-        '"suspect_description": "person with backpack", '
-        '"one_line_summary": "person near door with bag", '
+        '{"tier": 3, "behavior_pattern": "taking_item", "confidence": 0.7, '
+        '"suspect_description": "young man in red hoodie with backpack", '
+        '"one_line_summary": "person reached for a package on the porch", '
         '"time_elapsed": "x"}'
     )
     payload = parse_classifier_output(raw_accept, 1.0)
@@ -150,3 +151,129 @@ def test_constants_are_exported() -> None:
     # Helps ensure we don't accidentally drop the safety lists during refactors.
     assert "library" in HALLUCINATED_LOCATIONS
     assert "no event" in LOW_VALUE_PHRASES
+
+
+# ---------------------------------------------------------------------------
+# behavior_pattern guard + numeric scrubbing
+# ---------------------------------------------------------------------------
+
+
+def test_tier3_with_benign_pattern_is_clamped_to_ambient() -> None:
+    """Person walking through with a backpack should never call the homeowner."""
+    raw = (
+        '{"tier": 3, "behavior_pattern": "walking_through", "confidence": 0.9, '
+        '"suspect_description": "young man in red hoodie carrying a backpack", '
+        '"one_line_summary": "person walked past the porch", '
+        '"time_elapsed": "x"}'
+    )
+    result = evaluate_classifier_output(raw, 1.0)
+    assert result.status == "degrade"
+    assert result.payload["tier"] == 1
+    assert "walking_through" in result.reason
+
+
+def test_tier3_with_loitering_is_clamped_to_notice() -> None:
+    raw = (
+        '{"tier": 3, "behavior_pattern": "loitering", "confidence": 0.7, '
+        '"suspect_description": "young woman in green jacket near the door", '
+        '"one_line_summary": "person stood near the porch for several minutes", '
+        '"time_elapsed": "x"}'
+    )
+    result = evaluate_classifier_output(raw, 1.0)
+    assert result.status == "degrade"
+    assert result.payload["tier"] == 2
+
+
+def test_tier3_taking_item_is_accepted() -> None:
+    raw = (
+        '{"tier": 3, "behavior_pattern": "taking_item", "confidence": 0.8, '
+        '"suspect_description": "young man in black hoodie with backpack", '
+        '"one_line_summary": "person picked up a package and walked away", '
+        '"time_elapsed": "x"}'
+    )
+    result = evaluate_classifier_output(raw, 1.0)
+    assert result.status == "accept"
+    assert result.payload["tier"] == 3
+
+
+def test_tier4_violence_is_accepted() -> None:
+    raw = (
+        '{"tier": 4, "behavior_pattern": "violence", "confidence": 0.85, '
+        '"suspect_description": "two men in dark jackets shoving each other", '
+        '"one_line_summary": "physical altercation in the driveway", '
+        '"time_elapsed": "x"}'
+    )
+    result = evaluate_classifier_output(raw, 1.0)
+    assert result.status == "accept"
+    assert result.payload["tier"] == 4
+
+
+def test_tier3_without_visual_descriptor_is_clamped_to_notice() -> None:
+    """A tier-3 alert with no clothing/color descriptor lacks demo value."""
+    raw = (
+        '{"tier": 3, "behavior_pattern": "taking_item", "confidence": 0.8, '
+        '"suspect_description": "subject took the item", '
+        '"one_line_summary": "subject took the item near the entryway", '
+        '"time_elapsed": "x"}'
+    )
+    result = evaluate_classifier_output(raw, 1.0)
+    assert result.status == "degrade"
+    assert result.payload["tier"] == 2
+
+
+def test_numeric_artifacts_are_scrubbed_from_description() -> None:
+    """'person 0.08' style leaks from the VLM are removed."""
+    raw = (
+        '{"tier": 3, "behavior_pattern": "taking_item", "confidence": 0.8, '
+        '"suspect_description": "person 0.08 in red hoodie with backpack", '
+        '"one_line_summary": "person 1 0.85 took a package", '
+        '"time_elapsed": "x"}'
+    )
+    result = evaluate_classifier_output(raw, 1.0)
+    assert result.payload is not None
+    desc = result.payload["suspect_description"]
+    summary = result.payload["one_line_summary"]
+    assert "0.08" not in desc and "0.08" not in summary
+    assert "person 0" not in desc.lower() and "person 1" not in summary.lower()
+    assert "red hoodie" in desc and "backpack" in desc
+
+
+def test_id_and_track_artifacts_are_scrubbed() -> None:
+    raw = (
+        '{"tier": 2, "behavior_pattern": "loitering", "confidence": 0.5, '
+        '"suspect_description": "id 3 track_2 person in blue jacket", '
+        '"one_line_summary": "subject in blue jacket lingered", '
+        '"time_elapsed": "x"}'
+    )
+    result = evaluate_classifier_output(raw, 1.0)
+    assert result.payload is not None
+    desc = result.payload["suspect_description"]
+    assert "id 3" not in desc.lower()
+    assert "track_2" not in desc.lower()
+    assert "blue jacket" in desc
+
+
+def test_behavior_pattern_aliases_normalized() -> None:
+    raw = (
+        '{"tier": 3, "behavior_pattern": "stealing", "confidence": 0.8, '
+        '"suspect_description": "young man in red hoodie with backpack", '
+        '"one_line_summary": "person grabbed a package and ran", '
+        '"time_elapsed": "x"}'
+    )
+    result = evaluate_classifier_output(raw, 1.0)
+    assert result.payload is not None
+    assert result.payload["behavior_pattern"] == "taking_item"
+
+
+def test_missing_behavior_pattern_defaults_to_other_benign_and_degrades() -> None:
+    raw = (
+        '{"tier": 3, "confidence": 0.7, '
+        '"suspect_description": "young man in red hoodie", '
+        '"one_line_summary": "person near the porch", '
+        '"time_elapsed": "x"}'
+    )
+    result = evaluate_classifier_output(raw, 1.0)
+    # No pattern given -> defaults to benign -> tier 3 clamps down to 1.
+    assert result.status == "degrade"
+    assert result.payload["tier"] == 1
+    assert result.payload["behavior_pattern"] == "other_benign"

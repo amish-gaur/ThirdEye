@@ -26,29 +26,49 @@ from typing import Any
 # Prompt sent to the VLM (Qwen / Moondream). Tight, explicit, JSON-only.
 # ---------------------------------------------------------------------------
 
-VISION_LANGUAGE_PROMPT = """You are a calm, factual neighborhood security classifier.
+VISION_LANGUAGE_PROMPT = """You are SafeWatch, a calm, factual outdoor home security classifier.
 
-Look at the scene and decide a severity tier from this list:
-  1 = AMBIENT   (passerby, normal activity, nothing notable)
-  2 = NOTICE    (loitering, unusual presence, no immediate threat)
-  3 = ALERT     (likely theft / trespass / suspicious interaction with property)
-  4 = EMERGENCY (collapse, injury, fire, smoke, violence)
+Pick ONE behavior_pattern that best matches what the person is doing:
+  walking_through   - just passing by, no interaction with property
+  loitering         - standing/lingering with no apparent purpose, no theft action
+  taking_item       - picking up, grabbing, or removing an item that is not theirs
+  leaving_item      - placing an object down (could be a package, could be suspicious)
+  opening_container - opening a bag/box/door/package that is not obviously theirs
+  fleeing           - running away from the camera with an item
+  collapsed         - person on the ground, not moving normally
+  violence          - physical fight, weapon visible, threatening posture
+  other_benign      - clearly normal activity (delivery, walking pet, neighbor)
+
+Then map behavior_pattern to a tier:
+  1 AMBIENT   = walking_through, other_benign
+  2 NOTICE    = loitering, leaving_item
+  3 ALERT     = taking_item, opening_container, fleeing
+  4 EMERGENCY = collapsed, violence
+
+Carrying a backpack/bag/purse is NORMAL. Do NOT mark a tier >= 3 just because
+someone is carrying something. You must see an actual theft action (reaching for
+property that isn't theirs, removing it, running off with it) to use tier 3.
 
 OUTPUT RULES (strict):
 - Reply with ONE JSON object and NOTHING else. No prose, no markdown, no code fences.
 - Keys (all required):
-    "tier": integer in {1,2,3,4}
-    "confidence": float in [0.0, 1.0]
-    "suspect_description": short factual phrase (<= 18 words). Describe ONLY what
-        is visible (clothing color, item being carried, posture). Do NOT invent
-        names, ages, ethnicities, indoor rooms, or context you cannot see.
-    "one_line_summary": short factual sentence (<= 20 words) about the BEHAVIOR.
-    "time_elapsed": short string (will be overwritten by the pipeline).
+    "tier"               : integer in {1,2,3,4}
+    "behavior_pattern"   : one of the strings listed above
+    "confidence"         : float in [0.0, 1.0]
+    "suspect_description": short factual phrase (6-18 words). MUST include at least
+        one CLOTHING COLOR (e.g. "red hoodie", "black jacket", "blue jeans") and
+        the apparent gender or build if visible. NEVER include numbers, IDs,
+        confidence scores, bounding-box coords, or model names. NEVER write
+        phrases like "person 0", "person 0.08", or "id 3".
+    "one_line_summary"   : short factual sentence (8-20 words) about the BEHAVIOR
+        you actually saw, in plain English. Reference the behavior_pattern.
+    "time_elapsed"       : short string (will be overwritten by the pipeline).
 
 DO NOT name indoor places (library, classroom, office, kitchen, bedroom, store,
-restaurant, mall, school, hospital, church). This is an outdoor home camera.
+restaurant, mall, school, hospital, church). This is an OUTDOOR home camera.
 
-If unsure, choose tier 1 with low confidence.
+If you are unsure, return tier 1 with behavior_pattern "other_benign" and
+confidence <= 0.3. Never guess high.
 """
 
 TIER_LABELS = {1: "AMBIENT", 2: "NOTICE", 3: "ALERT", 4: "EMERGENCY"}
@@ -60,6 +80,58 @@ REQUIRED_CLASSIFIER_KEYS = {
     "one_line_summary",
     "time_elapsed",
 }
+
+# behavior_pattern values mapped to the maximum tier they may carry.
+# A pattern observed at a HIGHER tier than allowed is clamped down — this is the
+# semantic guard that prevents "person walking with a backpack" from ever
+# surfacing as ALERT/EMERGENCY just because Qwen got over-excited.
+BEHAVIOR_PATTERN_MAX_TIER = {
+    "walking_through": 1,
+    "other_benign": 1,
+    "loitering": 2,
+    "leaving_item": 2,
+    "taking_item": 4,
+    "opening_container": 3,
+    "fleeing": 4,
+    "collapsed": 4,
+    "violence": 4,
+}
+
+# Patterns that are inherently theft/threat. A tier >= 3 is only allowed if
+# behavior_pattern is in this set. Otherwise we clamp tier to the pattern's max.
+THEFT_OR_THREAT_PATTERNS = {
+    "taking_item",
+    "opening_container",
+    "fleeing",
+    "collapsed",
+    "violence",
+}
+
+# Words/phrases that signal a real visual descriptor (color, clothing, build).
+# If suspect_description has none of these, we treat the description as too vague
+# and DEGRADE the event to tier 1 (so we don't make a phone call narrating
+# "an unknown person did something").
+DESCRIPTOR_HINT_WORDS = (
+    # colors
+    "red", "orange", "yellow", "green", "blue", "purple", "pink", "white",
+    "black", "gray", "grey", "brown", "tan", "beige", "navy", "khaki", "maroon",
+    "dark", "light",
+    # clothing items (singular and common plurals)
+    "hoodie", "hoodies", "jacket", "jackets", "coat", "coats",
+    "shirt", "shirts", "tshirt", "t-shirt", "tshirts",
+    "sweater", "sweaters", "sweatshirt", "sweatshirts",
+    "vest", "vests", "jeans", "pants", "shorts", "skirt", "skirts",
+    "dress", "dresses",
+    "hat", "hats", "cap", "caps", "beanie", "hood", "hoods", "scarf", "mask",
+    "glasses", "sunglasses",
+    "sneakers", "boots", "shoes",
+    "uniform", "uniforms", "vestment",
+    # build / gender (singular and plurals)
+    "tall", "short", "young", "older", "elderly", "teen", "teens",
+    "child", "children", "kid", "kids", "adult", "adults",
+    "man", "men", "woman", "women", "male", "female",
+    "boy", "boys", "girl", "girls", "person", "people",
+)
 
 # Words/phrases that indicate the VLM is hallucinating an indoor scene/context
 # the home camera cannot actually see. These cause REJECT (or DEGRADE to tier 1).
@@ -155,6 +227,28 @@ def evaluate_classifier_output(
             "degrade", payload, "low-value content; degraded to tier 1"
         )
 
+    # Semantic guard: tier 3+ requires a theft-or-threat behavior pattern.
+    pattern = payload.get("behavior_pattern", "other_benign")
+    max_tier = BEHAVIOR_PATTERN_MAX_TIER.get(pattern, 2)
+    if payload["tier"] > max_tier:
+        original_tier = payload["tier"]
+        payload["tier"] = max_tier
+        return ClassificationResult(
+            "degrade",
+            payload,
+            f"clamped tier {original_tier} -> {max_tier} for behavior_pattern={pattern!r}",
+        )
+
+    # Description must contain a real visual descriptor (color/clothing/build).
+    # Otherwise we don't trust the model enough to fire a call about it.
+    if payload["tier"] >= 3 and not _has_visual_descriptor(payload["suspect_description"]):
+        payload["tier"] = 2
+        return ClassificationResult(
+            "degrade",
+            payload,
+            "suspect_description lacks visual descriptor; clamped to tier 2",
+        )
+
     return ClassificationResult("accept", payload, "ok")
 
 
@@ -183,6 +277,7 @@ def build_event(
         "tier": tier,
         "tier_name": TIER_LABELS.get(tier, "UNKNOWN"),
         "confidence": float(classification["confidence"]),
+        "behavior_pattern": classification.get("behavior_pattern", "other_benign"),
         "suspect_description": classification["suspect_description"],
         "one_line_summary": classification["one_line_summary"],
         "time_elapsed": classification["time_elapsed"],
@@ -296,7 +391,10 @@ def _normalize_classifier_payload(
         payload["one_line_summary"] = payload["summary"]
     if "description" in payload and "suspect_description" not in payload:
         payload["suspect_description"] = payload["description"]
+    if "pattern" in payload and "behavior_pattern" not in payload:
+        payload["behavior_pattern"] = payload["pattern"]
     payload.setdefault("time_elapsed", "ignored")
+    payload.setdefault("behavior_pattern", "other_benign")
 
     if not REQUIRED_CLASSIFIER_KEYS.issubset(payload.keys()):
         return None
@@ -315,11 +413,15 @@ def _normalize_classifier_payload(
     if not isinstance(desc, str) or not isinstance(summary, str) or not isinstance(elapsed, str):
         return None
 
+    desc = _scrub_numeric_artifacts(desc)
+    summary = _scrub_numeric_artifacts(summary)
     desc = _trim_words(desc, MAX_DESCRIPTION_WORDS)
     summary = _trim_words(summary, MAX_SUMMARY_WORDS)
 
     if not desc or not summary:
         return None
+
+    behavior_pattern = _coerce_behavior_pattern(payload.get("behavior_pattern"))
 
     return {
         "tier": tier,
@@ -327,7 +429,71 @@ def _normalize_classifier_payload(
         "suspect_description": desc,
         "one_line_summary": summary,
         "time_elapsed": f"{time_elapsed_seconds:.2f}s",
+        "behavior_pattern": behavior_pattern,
     }
+
+
+def _coerce_behavior_pattern(value: Any) -> str:
+    """Normalize behavior_pattern to one of the known strings; default benign."""
+    if not isinstance(value, str):
+        return "other_benign"
+    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized in BEHAVIOR_PATTERN_MAX_TIER:
+        return normalized
+    # Fuzzy aliases the model often emits.
+    aliases = {
+        "theft": "taking_item",
+        "stealing": "taking_item",
+        "grabbing": "taking_item",
+        "package_theft": "taking_item",
+        "porch_pirate": "taking_item",
+        "running": "fleeing",
+        "running_away": "fleeing",
+        "fight": "violence",
+        "fighting": "violence",
+        "weapon": "violence",
+        "fall": "collapsed",
+        "fallen": "collapsed",
+        "passerby": "walking_through",
+        "passing_by": "walking_through",
+        "delivery": "other_benign",
+        "neighbor": "other_benign",
+    }
+    return aliases.get(normalized, "other_benign")
+
+
+# Patterns we want to STRIP out of suspect_description before it ever reaches
+# narration/TTS. These come from VLMs leaking model internals or YOLO confidences
+# (e.g. "person 0.08", "id 3", "track_2").
+_NUMERIC_JUNK_PATTERNS = (
+    re.compile(r"\bperson[_\s-]?\d+(?:\.\d+)?\b", re.IGNORECASE),
+    re.compile(r"\bid[_\s-]?\d+\b", re.IGNORECASE),
+    re.compile(r"\btrack[_\s-]?\d+\b", re.IGNORECASE),
+    re.compile(r"\bclass[_\s-]?\d+\b", re.IGNORECASE),
+    re.compile(r"\b(?:conf(?:idence)?|score)[\s:=]*\d+(?:\.\d+)?%?\b", re.IGNORECASE),
+    # bare floats in a description ("a person 0.08 with a backpack")
+    re.compile(r"(?<!\d)\d+\.\d+(?!\d)"),
+    # bbox-style triplets/quads
+    re.compile(r"\bbbox[\s:=]*\[[^\]]*\]", re.IGNORECASE),
+    re.compile(r"\b(?:x1|y1|x2|y2)[\s:=]*\d+(?:\.\d+)?", re.IGNORECASE),
+)
+
+
+def _scrub_numeric_artifacts(text: str) -> str:
+    """Remove model-leak tokens like 'person 0.08', 'id 3', 'conf=0.85'."""
+    cleaned = text
+    for pat in _NUMERIC_JUNK_PATTERNS:
+        cleaned = pat.sub(" ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.;:-")
+    return cleaned
+
+
+def _has_visual_descriptor(text: str) -> bool:
+    """True if `text` contains at least one color/clothing/build descriptor."""
+    if not text:
+        return False
+    blob = text.lower()
+    return any(re.search(rf"\b{re.escape(word)}\b", blob) for word in DESCRIPTOR_HINT_WORDS)
 
 
 def _contains_hallucinated_location(payload: dict[str, Any]) -> str | None:

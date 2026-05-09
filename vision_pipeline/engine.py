@@ -762,9 +762,10 @@ class VisionEngine:
             raw_answer = json.dumps(
                 {
                     "tier": 3,
-                    "confidence": 0.9,
-                    "suspect_description": "person detected by mock classifier",
-                    "one_line_summary": "person detected near the camera",
+                    "behavior_pattern": "taking_item",
+                    "confidence": 0.85,
+                    "suspect_description": "young man in a red hoodie and dark jeans",
+                    "one_line_summary": "person picked up a package from the porch and walked away",
                     "time_elapsed": "ignored",
                 }
             )

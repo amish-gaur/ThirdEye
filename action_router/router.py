@@ -70,14 +70,20 @@ class ActionResult:
 
 def execute_action(event_json: Dict[str, Any], config: Optional[Config] = None) -> ActionResult:
     cfg = config or CONFIG
-    tier = _coerce_tier(event_json.get("tier"))
+    raw_tier = _coerce_tier(event_json.get("tier"))
+    tier, downgrade_note = _apply_confidence_floor(raw_tier, event_json, cfg)
     label = TIER_LABELS.get(tier, "UNKNOWN")
     result = ActionResult(tier=tier, tier_label=label)
+    if downgrade_note:
+        result.actions.append(downgrade_note)
     log.info(
-        "execute_action tier=%d (%s) event_id=%s summary=%r",
+        "execute_action tier=%d (%s) raw_tier=%d event_id=%s pattern=%s conf=%.2f summary=%r",
         tier,
         label,
+        raw_tier,
         event_json.get("event_id"),
+        event_json.get("behavior_pattern", "?"),
+        _safe_confidence(event_json.get("confidence")),
         event_json.get("one_line_summary"),
     )
 
@@ -86,6 +92,12 @@ def execute_action(event_json: Dict[str, Any], config: Optional[Config] = None) 
         result.actions.append("dedup_skip")
         log.info("Skipping duplicate event_id=%s", event_json.get("event_id"))
         return result
+
+    # Mutate the event in place so downstream narration sees the corrected tier.
+    if tier != raw_tier:
+        event_json = dict(event_json)
+        event_json["tier"] = tier
+        event_json["tier_name"] = label
 
     if tier == 1:
         return _tier_ambient(event_json, cfg, result)
@@ -98,6 +110,44 @@ def execute_action(event_json: Dict[str, Any], config: Optional[Config] = None) 
 
     result.errors.append(f"unknown tier: {tier}")
     return result
+
+
+def _safe_confidence(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _apply_confidence_floor(
+    tier: int, event_json: Dict[str, Any], cfg: Config
+) -> tuple[int, Optional[str]]:
+    """Downgrade tier when classifier confidence is below the configured floor.
+
+    Tier 4 needs >= EMERGENCY_CONFIDENCE_FLOOR. Below that we step it down to 3.
+    Tier 3 needs >= ALERT_CONFIDENCE_FLOOR. Below that we step it down to 2.
+    Returns (final_tier, optional action-tag).
+    """
+    if tier < 3:
+        return tier, None
+    confidence = _safe_confidence(event_json.get("confidence"))
+    new_tier = tier
+    if tier == 4 and confidence < cfg.emergency_confidence_floor:
+        new_tier = 3
+    if new_tier == 3 and confidence < cfg.alert_confidence_floor:
+        new_tier = 2
+    if new_tier == tier:
+        return tier, None
+    note = f"downgrade_tier_{tier}_to_{new_tier}_low_confidence"
+    log.warning(
+        "Downgrading tier %d -> %d (confidence=%.2f, alert_floor=%.2f, emergency_floor=%.2f)",
+        tier,
+        new_tier,
+        confidence,
+        cfg.alert_confidence_floor,
+        cfg.emergency_confidence_floor,
+    )
+    return new_tier, note
 
 
 def _is_duplicate(event_json: Dict[str, Any]) -> bool:

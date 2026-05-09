@@ -17,11 +17,35 @@ def main() -> None:
     parser.add_argument(
         "--url", default=f"http://127.0.0.1:{CONFIG.port}/event"
     )
-    parser.add_argument("--description", default="person in red hoodie")
-    parser.add_argument("--summary", default="took a package from the porch")
+    parser.add_argument(
+        "--description",
+        default="young man in a red hoodie and dark jeans",
+        help="suspect_description as Qwen would emit it (clothing color required)",
+    )
+    parser.add_argument(
+        "--summary",
+        default="person picked up a package from the porch and walked away",
+    )
+    parser.add_argument(
+        "--behavior",
+        default=None,
+        help="behavior_pattern (taking_item / loitering / fleeing / collapsed / ...)",
+    )
+    parser.add_argument(
+        "--confidence",
+        type=float,
+        default=0.85,
+        help="Qwen confidence in [0,1]. Below alert floor (0.55) downgrades the call.",
+    )
     args = parser.parse_args()
 
-    event = sample_event(tier=args.tier, description=args.description, summary=args.summary)
+    event = sample_event(
+        tier=args.tier,
+        description=args.description,
+        summary=args.summary,
+        confidence=args.confidence,
+        behavior_pattern=args.behavior,
+    )
     print(f"POST {args.url}\n{json.dumps(event, indent=2)}\n")
     resp = requests.post(args.url, json=event, timeout=15)
     print(f"-> {resp.status_code}")

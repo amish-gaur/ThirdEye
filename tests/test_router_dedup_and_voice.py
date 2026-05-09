@@ -96,3 +96,52 @@ def test_place_call_say_dry_run_returns_dryrun(dry_config) -> None:
     assert result.dry_run
     assert result.sid == "DRYRUN"
     assert "hello world" in result.twiml
+
+
+# ---------------------------------------------------------------------------
+# Confidence floor: low-confidence ALERTs must NOT trigger calls
+# ---------------------------------------------------------------------------
+
+
+def test_low_confidence_tier3_is_downgraded_to_sms(dry_config) -> None:
+    """Person 1 was overconfident: tier 3 with conf 0.4 should not call."""
+    event = sample_event(tier=3, confidence=0.40)
+    result = execute_action(event, config=dry_config)
+    assert result.tier == 2
+    assert "call_homeowner" not in result.actions
+    assert "sms_homeowner" in result.actions
+    assert any("downgrade_tier_3_to_2" in a for a in result.actions)
+
+
+def test_high_confidence_tier3_still_calls(dry_config) -> None:
+    event = sample_event(tier=3, confidence=0.85)
+    result = execute_action(event, config=dry_config)
+    assert result.tier == 3
+    assert "call_homeowner" in result.actions
+
+
+def test_low_confidence_tier4_is_downgraded_to_alert(dry_config) -> None:
+    """Tier 4 with conf 0.6 should drop to tier 3 (call only, no cascade)."""
+    event = sample_event(tier=4, confidence=0.6)
+    result = execute_action(event, config=dry_config)
+    assert result.tier == 3
+    assert "call_homeowner" in result.actions
+    assert "call_dispatch" not in result.actions
+    assert any("downgrade_tier_4_to_3" in a for a in result.actions)
+
+
+def test_very_low_confidence_tier4_is_downgraded_to_sms(dry_config) -> None:
+    """Tier 4 with conf 0.3 should drop all the way to tier 2."""
+    event = sample_event(tier=4, confidence=0.3)
+    result = execute_action(event, config=dry_config)
+    assert result.tier == 2
+    assert "call_homeowner" not in result.actions
+    assert "sms_homeowner" in result.actions
+
+
+def test_tier1_and_tier2_ignore_confidence_floor(dry_config) -> None:
+    """Floors only apply to tier 3+."""
+    event = sample_event(tier=2, confidence=0.05)
+    result = execute_action(event, config=dry_config)
+    assert result.tier == 2
+    assert "sms_homeowner" in result.actions
