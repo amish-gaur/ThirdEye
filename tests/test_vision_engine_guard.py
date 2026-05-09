@@ -1,3 +1,8 @@
+import pytest
+
+pytest.importorskip("torch")
+pytest.importorskip("cv2")
+
 from vision_pipeline.config import Config
 from vision_pipeline.engine import (
     BOX_CLASS_IDS,
