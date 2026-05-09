@@ -628,13 +628,29 @@ class VisionEngine:
                             decision.candidate.recent_zone_dwell,
                         )
                     latest_frame = self.frame_buffer[-1]
-                    request = ClassificationRequest(
-                        timestamp=latest_frame.timestamp,
-                        frame_seq=self.frame_seq,
-                        frame_bgr=latest_frame.frame_bgr.copy(),
-                        yolo_classes=yolo_classes,
-                    )
-                    fired = self._submit_classification(request)
+
+                    if self.config.mock_classifier:
+                        parsed, raw = self._classify_with_qwen(frame, 0.0)
+                        if parsed:
+                            event = build_event(
+                                classification=parsed,
+                                node_id=self.config.node_id,
+                                frame_seq=self.frame_seq,
+                                yolo_classes=yolo_classes,
+                                raw_classifier=raw,
+                            )
+                            print(json.dumps(event, ensure_ascii=True))
+                            self._publish_event(event)
+                        fired = True
+                    else:
+                        request = ClassificationRequest(
+                            timestamp=latest_frame.timestamp,
+                            frame_seq=self.frame_seq,
+                            frame_bgr=latest_frame.frame_bgr.copy(),
+                            yolo_classes=yolo_classes,
+                        )
+                        fired = self._submit_classification(request)
+
                     if self.config.save_failure_artifacts:
                         self._save_artifact(
                             kind="emit" if fired else "emit_dropped",
