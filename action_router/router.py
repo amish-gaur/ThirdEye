@@ -6,11 +6,18 @@
     2 NOTICE    - send SMS to homeowner
     3 ALERT     - Claude→ElevenLabs→Twilio Play call to homeowner
     4 EMERGENCY - parallel Twilio Play calls to dispatch + homeowner + family
+
+Person 2 hardening:
+- Idempotency: same `event_id` arriving twice within DEDUP_WINDOW_SECONDS is
+  ignored. Defends against vision sending the same candidate twice.
+- Defensive tier coercion: accepts int, float, "3", "ALERT".
 """
 
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -24,6 +31,11 @@ from .voice import CallResult, place_call_play, place_call_say
 log = logging.getLogger("action_router.router")
 
 TIER_LABELS = {1: "AMBIENT", 2: "NOTICE", 3: "ALERT", 4: "EMERGENCY"}
+TIER_NAME_TO_INT = {v: k for k, v in TIER_LABELS.items()}
+
+DEDUP_WINDOW_SECONDS = 30.0
+_recent_event_ids: Dict[str, float] = {}
+_dedup_lock = threading.Lock()
 
 
 @dataclass
@@ -36,6 +48,7 @@ class ActionResult:
     calls: List[CallResult] = field(default_factory=list)
     messages: List[SmsResult] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
+    duplicate: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -44,6 +57,7 @@ class ActionResult:
             "actions": self.actions,
             "script": self.script,
             "media_url": self.media_url,
+            "duplicate": self.duplicate,
             "calls": [
                 {"to": c.to, "sid": c.sid, "dry_run": c.dry_run} for c in self.calls
             ],
@@ -59,7 +73,19 @@ def execute_action(event_json: Dict[str, Any], config: Optional[Config] = None) 
     tier = _coerce_tier(event_json.get("tier"))
     label = TIER_LABELS.get(tier, "UNKNOWN")
     result = ActionResult(tier=tier, tier_label=label)
-    log.info("execute_action tier=%d (%s) summary=%r", tier, label, event_json.get("one_line_summary"))
+    log.info(
+        "execute_action tier=%d (%s) event_id=%s summary=%r",
+        tier,
+        label,
+        event_json.get("event_id"),
+        event_json.get("one_line_summary"),
+    )
+
+    if _is_duplicate(event_json):
+        result.duplicate = True
+        result.actions.append("dedup_skip")
+        log.info("Skipping duplicate event_id=%s", event_json.get("event_id"))
+        return result
 
     if tier == 1:
         return _tier_ambient(event_json, cfg, result)
@@ -72,6 +98,30 @@ def execute_action(event_json: Dict[str, Any], config: Optional[Config] = None) 
 
     result.errors.append(f"unknown tier: {tier}")
     return result
+
+
+def _is_duplicate(event_json: Dict[str, Any]) -> bool:
+    """True if the same event_id was seen within DEDUP_WINDOW_SECONDS."""
+    event_id = event_json.get("event_id")
+    if not event_id:
+        return False
+    now = time.monotonic()
+    with _dedup_lock:
+        last_seen = _recent_event_ids.get(event_id)
+        # Garbage-collect old entries opportunistically.
+        stale = [k for k, v in _recent_event_ids.items() if now - v > DEDUP_WINDOW_SECONDS]
+        for k in stale:
+            _recent_event_ids.pop(k, None)
+        _recent_event_ids[event_id] = now
+        if last_seen is None:
+            return False
+        return (now - last_seen) <= DEDUP_WINDOW_SECONDS
+
+
+def reset_dedup_cache() -> None:
+    """Test-only helper: clear the in-memory dedup cache."""
+    with _dedup_lock:
+        _recent_event_ids.clear()
 
 
 # ---- tier handlers --------------------------------------------------------
@@ -205,8 +255,19 @@ def _format_sms_body(event: Dict[str, Any]) -> str:
 
 
 def _coerce_tier(value: Any) -> int:
-    try:
+    """Best-effort coercion: int / float / numeric string / tier name -> 1..4."""
+    if isinstance(value, bool):
+        return 1
+    if isinstance(value, (int, float)):
         n = int(value)
-    except (TypeError, ValueError):
+    elif isinstance(value, str):
+        text = value.strip().upper()
+        if text in TIER_NAME_TO_INT:
+            return TIER_NAME_TO_INT[text]
+        try:
+            n = int(float(text))
+        except ValueError:
+            return 1
+    else:
         return 1
     return max(1, min(4, n))
