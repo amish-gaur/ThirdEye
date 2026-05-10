@@ -629,6 +629,9 @@ _CARRYABLE_BOX_COLOR = (255, 80, 220)
 _CARDBOARD_BOX_COLOR = (255, 0, 255)
 
 
+_OVERLAY_MIN_CONFIDENCE = 0.70
+
+
 def _draw_overlay(
     frame_bgr: Any,
     *,
@@ -641,8 +644,8 @@ def _draw_overlay(
     cand_person_box = candidate.last_person_box if candidate else None
     cand_carryable_box = candidate.last_carryable_box if candidate else None
 
-    def _rect(box, color, thickness):
-        x1, y1, x2, y2 = (int(round(v)) for v in box)
+    def _draw(det: Detection, color: tuple[int, int, int], thickness: int) -> None:
+        x1, y1, x2, y2 = (int(round(v)) for v in det.box)
         x1 = min(max(0, x1), max(0, w - 1))
         x2 = min(max(0, x2), max(0, w - 1))
         y1 = min(max(0, y1), max(0, h - 1))
@@ -650,19 +653,50 @@ def _draw_overlay(
         if x2 <= x1 or y2 <= y1:
             return
         cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), color, thickness)
+        # Confidence chip in the top-left of the box. Filled rectangle with
+        # the box's color, tight white text on top — mirrors the box hue so
+        # green = person / magenta = cardboard / pink = other carryable.
+        label = f"{det.confidence:.2f}"
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+        chip_w = tw + 8
+        chip_h = th + 6
+        chip_x1 = max(0, min(x1, w - chip_w))
+        chip_y2 = y1
+        chip_y1 = y1 - chip_h
+        if chip_y1 < 0:
+            chip_y1 = y1
+            chip_y2 = min(h - 1, y1 + chip_h)
+            text_y = chip_y2 - 4
+        else:
+            text_y = chip_y2 - 4
+        cv2.rectangle(frame_bgr, (chip_x1, chip_y1), (chip_x1 + chip_w, chip_y2), color, -1)
+        cv2.putText(
+            frame_bgr,
+            label,
+            (chip_x1 + 4, text_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
 
     for det in decision.person_boxes:
+        if det.confidence < _OVERLAY_MIN_CONFIDENCE:
+            continue
         is_candidate = cand_person_box is not None and _box_iou(det.box, cand_person_box) > 0.3
-        _rect(det.box, (0, 255, 0), 3 if is_candidate else 2)
+        _draw(det, (0, 255, 0), 3 if is_candidate else 2)
 
     for det in decision.carryable_boxes:
+        if det.confidence < _OVERLAY_MIN_CONFIDENCE:
+            continue
         is_candidate = cand_carryable_box is not None and _box_iou(det.box, cand_carryable_box) > 0.3
         color = (
             _CARDBOARD_BOX_COLOR
             if det.label.strip().lower() == "cardboard box"
             else _CARRYABLE_BOX_COLOR
         )
-        _rect(det.box, color, 3 if is_candidate else 2)
+        _draw(det, color, 3 if is_candidate else 2)
 
 
 def _draw_qwen_panel(frame_bgr: Any, cls: "LastClassification") -> None:
