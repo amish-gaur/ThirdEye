@@ -253,6 +253,55 @@ def test_id_and_track_artifacts_are_scrubbed() -> None:
     assert "blue jacket" in desc
 
 
+def test_person_no_dot_n_format_is_scrubbed() -> None:
+    """'Person No. 1 (0.85)' from over-eager VLMs gets fully cleaned."""
+    raw = (
+        '{"tier": 2, "behavior_pattern": "loitering", "confidence": 0.5, '
+        '"suspect_description": "Person No. 1 (0.85) in dark jacket", '
+        '"one_line_summary": "Person #2 0.7 lingered near the door", '
+        '"time_elapsed": "x"}'
+    )
+    result = evaluate_classifier_output(raw, 1.0)
+    assert result.payload is not None
+    desc = result.payload["suspect_description"].lower()
+    summary = result.payload["one_line_summary"].lower()
+    for needle in ("0.85", "0.7", "person no", "person #", "(0.", "()"):
+        assert needle not in desc, (needle, desc)
+        assert needle not in summary, (needle, summary)
+    assert "dark jacket" in desc
+    assert "lingered" in summary
+
+
+def test_bare_decimals_anywhere_are_scrubbed() -> None:
+    """Stray numeric tokens are removed even without a 'person' anchor."""
+    raw = (
+        '{"tier": 3, "behavior_pattern": "taking_item", "confidence": 0.7, '
+        '"suspect_description": "tall man 0.85 in black shirt and 0.62 gray jeans", '
+        '"one_line_summary": "subject 0.5 reached for the package 0.3", '
+        '"time_elapsed": "x"}'
+    )
+    result = evaluate_classifier_output(raw, 1.0)
+    assert result.payload is not None
+    for field in ("suspect_description", "one_line_summary"):
+        text = result.payload[field]
+        assert "0.85" not in text and "0.62" not in text
+        assert "0.5" not in text and "0.3" not in text
+
+
+def test_truthful_description_passes_through_unchanged() -> None:
+    """Real, well-formed descriptions are NOT mangled by the scrubber."""
+    raw = (
+        '{"tier": 3, "behavior_pattern": "taking_item", "confidence": 0.7, '
+        '"suspect_description": "tall man wearing a black shirt and gray jeans", '
+        '"one_line_summary": "person reached down and picked up an item from the porch", '
+        '"time_elapsed": "x"}'
+    )
+    result = evaluate_classifier_output(raw, 1.0)
+    assert result.payload is not None
+    assert result.payload["suspect_description"] == "tall man wearing a black shirt and gray jeans"
+    assert "picked up an item" in result.payload["one_line_summary"]
+
+
 def test_behavior_pattern_aliases_normalized() -> None:
     raw = (
         '{"tier": 3, "behavior_pattern": "stealing", "confidence": 0.8, '

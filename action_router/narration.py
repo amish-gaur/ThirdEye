@@ -87,14 +87,20 @@ def build_user_prompt(event: Dict[str, Any]) -> str:
 
 
 # Numeric junk patterns the validator should have stripped already, but we
-# defend in depth in case events arrive from anywhere else (manual SMS, tests).
+# defend in depth in case events arrive from anywhere else (manual SMS, tests,
+# a teammate POSTing raw JSON). Mirrors vision_pipeline.events scrubber.
 _NUMERIC_JUNK_PATTERNS = (
-    re.compile(r"\bperson[_\s-]?\d+(?:\.\d+)?\b", re.IGNORECASE),
-    re.compile(r"\bid[_\s-]?\d+\b", re.IGNORECASE),
-    re.compile(r"\btrack[_\s-]?\d+\b", re.IGNORECASE),
-    re.compile(r"\bclass[_\s-]?\d+\b", re.IGNORECASE),
-    re.compile(r"\b(?:conf(?:idence)?|score)[\s:=]*\d+(?:\.\d+)?%?\b", re.IGNORECASE),
-    re.compile(r"(?<!\d)\d+\.\d+(?!\d)"),
+    re.compile(
+        r"\bperson(?:\s*(?:no\.?|number|id|#|_)\s*)?[_\s\.\-#=:]*\d+(?:\.\d+)?\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bsubject[_\s\.\-#=:]*\d+(?:\.\d+)?\b", re.IGNORECASE),
+    re.compile(r"\b(?:id|track|class|cls|frame|seq)[_\s\.\-#=:]*\d+(?:\.\d+)?\b", re.IGNORECASE),
+    re.compile(r"\b(?:conf(?:idence)?|score|prob(?:ability)?)\s*[:=]?\s*\d+(?:\.\d+)?%?\b", re.IGNORECASE),
+    re.compile(r"\b(?:conf(?:idence)?|score|prob(?:ability)?)\s*[:=]\s*", re.IGNORECASE),
+    re.compile(r"\bbbox[\s:=]*\[[^\]]*\]", re.IGNORECASE),
+    re.compile(r"\b(?:x1|y1|x2|y2|cx|cy)[\s:=]*\d+(?:\.\d+)?\b", re.IGNORECASE),
+    re.compile(r"(?<![A-Za-z])\d+(?:\.\d+)?%?(?![A-Za-z])"),
 )
 
 GENERIC_DESCRIPTIONS = {
@@ -123,10 +129,17 @@ def sanitize_field(text: str) -> str:
     cleaned = re.sub(r"[`*_#>]+", " ", text)
     for pat in _NUMERIC_JUNK_PATTERNS:
         cleaned = pat.sub(" ", cleaned)
+    # Drop now-empty parens/brackets/quoted blanks the scrubber leaves behind.
+    cleaned = re.sub(r"\(\s*\)", " ", cleaned)
+    cleaned = re.sub(r"\[\s*\]", " ", cleaned)
+    cleaned = re.sub(r'"\s*"', " ", cleaned)
+    cleaned = re.sub(r"'\s*'", " ", cleaned)
+    cleaned = re.sub(r"\s+([,;:.])", r"\1", cleaned)
+    cleaned = re.sub(r"[=:#]\s+", " ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     for word in HALLUCINATED_LOCATIONS:
         cleaned = re.sub(rf"\b{re.escape(word)}\b", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.;:-")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.;:-#=")
     return cleaned
 
 

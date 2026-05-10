@@ -27,13 +27,15 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 VISION_LANGUAGE_PROMPT = """You are SafeWatch, a calm, factual outdoor home security classifier.
+You are looking at a SINGLE FRAME from an outdoor camera. Describe ONLY what you
+can clearly see. NEVER guess, NEVER assume, NEVER invent details.
 
-Pick ONE behavior_pattern that best matches what the person is doing:
+Pick ONE behavior_pattern that best matches what the person is doing IN THIS FRAME:
   walking_through   - just passing by, no interaction with property
   loitering         - standing/lingering with no apparent purpose, no theft action
-  taking_item       - picking up, grabbing, or removing an item that is not theirs
-  leaving_item      - placing an object down (could be a package, could be suspicious)
-  opening_container - opening a bag/box/door/package that is not obviously theirs
+  taking_item       - reaching for / picking up / removing an item that is not theirs
+  leaving_item      - placing an object down
+  opening_container - opening a bag/box/door/package
   fleeing           - running away from the camera with an item
   collapsed         - person on the ground, not moving normally
   violence          - physical fight, weapon visible, threatening posture
@@ -45,30 +47,38 @@ Then map behavior_pattern to a tier:
   3 ALERT     = taking_item, opening_container, fleeing
   4 EMERGENCY = collapsed, violence
 
-Carrying a backpack/bag/purse is NORMAL. Do NOT mark a tier >= 3 just because
+Carrying a backpack/bag/purse is NORMAL. Do NOT mark tier >= 3 just because
 someone is carrying something. You must see an actual theft action (reaching for
 property that isn't theirs, removing it, running off with it) to use tier 3.
 
+DESCRIPTION HONESTY (CRITICAL):
+- Describe ONLY clothing/build features that are CLEARLY VISIBLE in this frame.
+- If you cannot tell the color of an item, say "unknown color" or omit it.
+  DO NOT guess "red" if it could also be brown or orange.
+- If you cannot tell gender, say "person" — DO NOT guess "man" or "woman".
+- Lead with the MOST OBVIOUS visible feature (e.g. "tall person in a black
+  shirt and gray jeans", "short person in a dark coat with a backpack").
+- If the frame is too blurry, dark, or partial to see clothing clearly, return
+  "person of unclear appearance" and confidence <= 0.3.
+
 OUTPUT RULES (strict):
-- Reply with ONE JSON object and NOTHING else. No prose, no markdown, no code fences.
+- Reply with ONE JSON object and NOTHING else. No prose, no markdown, no fences.
 - Keys (all required):
     "tier"               : integer in {1,2,3,4}
     "behavior_pattern"   : one of the strings listed above
     "confidence"         : float in [0.0, 1.0]
-    "suspect_description": short factual phrase (6-18 words). MUST include at least
-        one CLOTHING COLOR (e.g. "red hoodie", "black jacket", "blue jeans") and
-        the apparent gender or build if visible. NEVER include numbers, IDs,
-        confidence scores, bounding-box coords, or model names. NEVER write
-        phrases like "person 0", "person 0.08", or "id 3".
-    "one_line_summary"   : short factual sentence (8-20 words) about the BEHAVIOR
-        you actually saw, in plain English. Reference the behavior_pattern.
+    "suspect_description": 6-18 words. ONLY visible clothing/build/color.
+        NEVER include numbers, IDs, confidence scores, bounding-box coords,
+        model names, or phrases like "person 0", "person 0.08", "id 3", "track_2".
+    "one_line_summary"   : 8-20 words about the BEHAVIOR you actually saw in
+        this frame. Reference the behavior_pattern naturally.
     "time_elapsed"       : short string (will be overwritten by the pipeline).
 
 DO NOT name indoor places (library, classroom, office, kitchen, bedroom, store,
 restaurant, mall, school, hospital, church). This is an OUTDOOR home camera.
 
-If you are unsure, return tier 1 with behavior_pattern "other_benign" and
-confidence <= 0.3. Never guess high.
+If unsure, return tier 1 with behavior_pattern "other_benign" and confidence
+<= 0.3. Honest "I don't know" beats a wrong guess.
 """
 
 TIER_LABELS = {1: "AMBIENT", 2: "NOTICE", 3: "ALERT", 4: "EMERGENCY"}
@@ -462,29 +472,49 @@ def _coerce_behavior_pattern(value: Any) -> str:
     return aliases.get(normalized, "other_benign")
 
 
-# Patterns we want to STRIP out of suspect_description before it ever reaches
-# narration/TTS. These come from VLMs leaking model internals or YOLO confidences
-# (e.g. "person 0.08", "id 3", "track_2").
+# Suspect descriptions and behavior summaries should never contain numbers, IDs,
+# bounding-box coords, or model internals. We scrub aggressively because Qwen2-VL
+# is a small model and leaks all kinds of things ("person 0.08", "Person No. 1
+# (0.85)", "id=3", "conf 0.62", etc.). Anything numeric in a description is junk.
 _NUMERIC_JUNK_PATTERNS = (
-    re.compile(r"\bperson[_\s-]?\d+(?:\.\d+)?\b", re.IGNORECASE),
-    re.compile(r"\bid[_\s-]?\d+\b", re.IGNORECASE),
-    re.compile(r"\btrack[_\s-]?\d+\b", re.IGNORECASE),
-    re.compile(r"\bclass[_\s-]?\d+\b", re.IGNORECASE),
-    re.compile(r"\b(?:conf(?:idence)?|score)[\s:=]*\d+(?:\.\d+)?%?\b", re.IGNORECASE),
-    # bare floats in a description ("a person 0.08 with a backpack")
-    re.compile(r"(?<!\d)\d+\.\d+(?!\d)"),
-    # bbox-style triplets/quads
+    # Labelled trackers: "person 0", "person 0.08", "person no 1", "person no. 1",
+    # "person #3", "person id 4", "person_1", "person id=2"
+    re.compile(
+        r"\bperson(?:\s*(?:no\.?|number|id|#|_)\s*)?[_\s\.\-#=:]*\d+(?:\.\d+)?\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bsubject[_\s\.\-#=:]*\d+(?:\.\d+)?\b", re.IGNORECASE),
+    re.compile(r"\b(?:id|track|class|cls|frame|seq)[_\s\.\-#=:]*\d+(?:\.\d+)?\b", re.IGNORECASE),
+    # Confidence/score tokens with optional value
+    re.compile(r"\b(?:conf(?:idence)?|score|prob(?:ability)?)\s*[:=]?\s*\d+(?:\.\d+)?%?\b", re.IGNORECASE),
+    re.compile(r"\b(?:conf(?:idence)?|score|prob(?:ability)?)\s*[:=]\s*", re.IGNORECASE),  # "conf=" with value gone
+    # Bbox-style coords
     re.compile(r"\bbbox[\s:=]*\[[^\]]*\]", re.IGNORECASE),
-    re.compile(r"\b(?:x1|y1|x2|y2)[\s:=]*\d+(?:\.\d+)?", re.IGNORECASE),
+    re.compile(r"\b(?:x1|y1|x2|y2|cx|cy)[\s:=]*\d+(?:\.\d+)?\b", re.IGNORECASE),
+    # Bare numbers (decimals, integers, percentages) — last resort
+    re.compile(r"(?<![A-Za-z])\d+(?:\.\d+)?%?(?![A-Za-z])"),
 )
 
 
 def _scrub_numeric_artifacts(text: str) -> str:
-    """Remove model-leak tokens like 'person 0.08', 'id 3', 'conf=0.85'."""
+    """Remove ALL model-leak tokens and stray numbers from a description.
+
+    Suspect descriptions and behavior summaries are short, factual phrases
+    about a HUMAN. They should never contain digits, IDs, or coordinates.
+    """
     cleaned = text
     for pat in _NUMERIC_JUNK_PATTERNS:
         cleaned = pat.sub(" ", cleaned)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.;:-")
+    # Remove now-empty parens / brackets / quoted blanks left behind.
+    cleaned = re.sub(r"\(\s*\)", " ", cleaned)
+    cleaned = re.sub(r"\[\s*\]", " ", cleaned)
+    cleaned = re.sub(r'"\s*"', " ", cleaned)
+    cleaned = re.sub(r"'\s*'", " ", cleaned)
+    # Remove dangling punctuation like ", ," or ":" or "id=" with nothing after.
+    cleaned = re.sub(r"\s+([,;:.])", r"\1", cleaned)
+    cleaned = re.sub(r"([,;:])\s*([,;:])", r"\1", cleaned)
+    cleaned = re.sub(r"[=:#]\s+", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.;:-#=")
     return cleaned
 
 
