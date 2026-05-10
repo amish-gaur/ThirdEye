@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Optional
 
+from ._trace import trace, trace_exception
 from .config import CONFIG, Config
 from .twiml import play_response, play_with_gather, say_response, say_with_gather
 
@@ -83,15 +85,23 @@ def place_call_say(
         log.warning("[DRY-RUN call→%s] %s", to, twiml)
         return CallResult(sid="DRYRUN", to=to, twiml=twiml, dry_run=True)
 
+    trace("TWILIO_API_SAY", level="STEP", to=to, from_=cfg.twilio_from_number,
+          twiml_chars=len(twiml), twiml_preview=twiml[:200])
+    api_t0 = time.monotonic()
     try:
         call = _client(cfg).calls.create(
             to=to, from_=cfg.twilio_from_number, twiml=twiml
         )
     except Exception as exc:  # noqa: BLE001 — convert to one stable error type
         log.exception("Twilio Say call failed to=%s", to)
+        trace_exception("TWILIO_API_ERR", exc, to=to, mode="say",
+                        elapsed_s=round(time.monotonic() - api_t0, 3))
         raise VoiceError(f"twilio say failed: {exc}") from exc
 
     log.info("Twilio Say call placed sid=%s to=%s", call.sid, to)
+    trace("TWILIO_API_OK", level="OK", to=to, sid=call.sid, mode="say",
+          status=getattr(call, "status", None),
+          elapsed_s=round(time.monotonic() - api_t0, 3))
     return CallResult(sid=call.sid, to=to, twiml=twiml)
 
 
@@ -124,13 +134,23 @@ def place_call_play(
         log.warning("[DRY-RUN call→%s] %s", to, twiml)
         return CallResult(sid="DRYRUN", to=to, twiml=twiml, dry_run=True)
 
+    trace("TWILIO_API_PLAY", level="STEP", to=to, from_=cfg.twilio_from_number,
+          media_url=media_url, twiml_chars=len(twiml), twiml_preview=twiml[:200],
+          hint="If recipient hears 'application error' Twilio could not fetch media_url — confirm it's reachable from Twilio (not localhost) and serves the MP3.")
+    api_t0 = time.monotonic()
     try:
         call = _client(cfg).calls.create(
             to=to, from_=cfg.twilio_from_number, twiml=twiml
         )
     except Exception as exc:  # noqa: BLE001
         log.exception("Twilio Play call failed to=%s media=%s", to, media_url)
+        trace_exception("TWILIO_API_ERR", exc, to=to, mode="play",
+                        media_url=media_url,
+                        elapsed_s=round(time.monotonic() - api_t0, 3))
         raise VoiceError(f"twilio play failed: {exc}") from exc
 
     log.info("Twilio Play call placed sid=%s to=%s media=%s", call.sid, to, media_url)
+    trace("TWILIO_API_OK", level="OK", to=to, sid=call.sid, mode="play",
+          status=getattr(call, "status", None),
+          elapsed_s=round(time.monotonic() - api_t0, 3))
     return CallResult(sid=call.sid, to=to, twiml=twiml)

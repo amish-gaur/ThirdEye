@@ -26,6 +26,19 @@ import requests
 log = logging.getLogger("vision_pipeline.theft_alert")
 
 
+# Reuse the action_router debug tracer so every step end-to-end is on a
+# single tape. Imported lazily so a Linux / test environment that doesn't
+# pull action_router still has a path through theft_alert.
+try:
+    from action_router._trace import trace as _trace, trace_exception as _trace_exc
+except Exception:  # pragma: no cover — defensive: tracer must never break the demo
+    def _trace(label, **kwargs):  # type: ignore[no-redef]
+        pass
+
+    def _trace_exc(label, exc, **kwargs):  # type: ignore[no-redef]
+        pass
+
+
 # Frames are written under <repo>/media/frames so they sit on the same disk
 # as the rest of the pipeline's clip output. The /upload endpoint copies them
 # onto the router's local fs and returns the absolute path to use as
@@ -131,7 +144,22 @@ def trigger_theft_alert(
 
     Returns the router's response dict (matches the JSON receipt format).
     """
+    _trace(
+        "THEFT_ALERT_ENTRY",
+        level="BEGIN",
+        incident=incident_id,
+        confidence=confidence,
+        scene=scene,
+        suspect=suspect_description[:100],
+        behavior=behavior_pattern,
+    )
     frame_path = save_best_frame(frame_bgr, incident_id)
+    try:
+        size = frame_path.stat().st_size
+    except OSError:
+        size = -1
+    _trace("FRAME_SAVED", level="OK", path=str(frame_path), bytes=size,
+           shape=tuple(frame_bgr.shape) if hasattr(frame_bgr, "shape") else None)
 
     payload: dict[str, Any] = {
         "tier": 4,
@@ -150,25 +178,44 @@ def trigger_theft_alert(
     if _use_http():
         base = resolve_router_base_url()
         if not base:
+            _trace("ROUTE", level="ERR",
+                   reason="ACTION_ROUTER_USE_HTTP=true but no URL configured")
             raise RuntimeError(
                 "ACTION_ROUTER_USE_HTTP=true but no router URL is configured"
             )
+        _trace("ROUTE", level="STEP", mode="http", base=base)
         try:
             payload["clip_path"] = upload_frame_to_action_router(frame_path)
+            _trace("UPLOAD_OK", level="OK", remote_path=payload["clip_path"])
         except Exception as exc:
             log.warning("frame upload failed; firing event without attachment: %s", exc)
-        r = requests.post(f"{base}/event", json=payload, timeout=15)
-        r.raise_for_status()
+            _trace_exc("UPLOAD_ERR", exc,
+                       hint="firing event without clip_path; iMessage will be text-only")
+        _trace("HTTP_POST_BEGIN", level="STEP", url=f"{base}/event",
+               clip=payload.get("clip_path"))
+        try:
+            r = requests.post(f"{base}/event", json=payload, timeout=15)
+            r.raise_for_status()
+        except Exception as exc:
+            _trace_exc("HTTP_POST_ERR", exc, url=f"{base}/event")
+            raise
         body = r.json()
+        _trace("HTTP_POST_OK", level="OK", status=r.status_code,
+               actions=body.get("actions"))
         log.info("Fired theft alert (http): %s", body.get("actions"))
         return body
 
     # In-process path: frame stays local, AppleScript drives Messages.app
     # on this Mac, Twilio is called directly with creds in this .env.
     payload["clip_path"] = str(frame_path.resolve())
+    _trace("ROUTE", level="STEP", mode="inproc", clip=payload["clip_path"])
     from action_router.router import execute_action  # local import — keeps cold imports fast
 
     result = execute_action(payload)
     body = result.to_dict()
     log.info("Fired theft alert (in-process): %s", body.get("actions"))
+    _trace("THEFT_ALERT_DONE", level="OK", actions=body.get("actions"),
+           calls=len(body.get("calls", [])),
+           messages=len(body.get("messages", [])),
+           errors=body.get("errors"))
     return body
