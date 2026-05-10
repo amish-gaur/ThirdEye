@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .config import CONFIG, Config
-from .twiml import play_response, say_response
+from .twiml import play_response, play_with_gather, say_response, say_with_gather
 
 log = logging.getLogger("action_router.voice")
 
@@ -55,7 +55,7 @@ def _validate_to(to: str) -> str:
 
 def _clamp_say(text: str) -> str:
     if not text:
-        return "SafeWatch alert."
+        return "ThirdEye alert."
     cleaned = " ".join(text.split())
     if len(cleaned) <= SAY_TEXT_MAX_CHARS:
         return cleaned
@@ -66,13 +66,18 @@ def place_call_say(
     to: str,
     text: str,
     voice: str = "alice",
+    gather_action_url: str | None = None,
     config: Optional[Config] = None,
 ) -> CallResult:
     """Step 4a: outbound call that just speaks `text`. No media URL needed."""
     cfg = config or CONFIG
     to = _validate_to(to)
     text = _clamp_say(text)
-    twiml = say_response(text, voice=voice)
+    twiml = (
+        say_with_gather(text, gather_action_url, voice=voice)
+        if gather_action_url
+        else say_response(text, voice=voice)
+    )
 
     if cfg.dry_run or not cfg.twilio_account_sid:
         log.warning("[DRY-RUN call→%s] %s", to, twiml)
@@ -94,6 +99,7 @@ def place_call_play(
     to: str,
     media_url: str,
     fallback_text: Optional[str] = None,
+    gather_action_url: str | None = None,
     config: Optional[Config] = None,
 ) -> CallResult:
     """Step 4b: outbound call that plays an MP3 (the ElevenLabs synthesis).
@@ -108,7 +114,11 @@ def place_call_play(
         raise VoiceError(f"invalid media_url: {media_url!r}")
 
     fallback = _clamp_say(fallback_text) if fallback_text else None
-    twiml = play_response(media_url, fallback_text=fallback)
+    twiml = (
+        play_with_gather(media_url, gather_action_url)
+        if gather_action_url
+        else play_response(media_url, fallback_text=fallback)
+    )
 
     if cfg.dry_run or not cfg.twilio_account_sid:
         log.warning("[DRY-RUN call→%s] %s", to, twiml)

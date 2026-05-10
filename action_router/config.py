@@ -70,6 +70,7 @@ class Config:
     # Behavior knobs
     dry_run: bool = _bool("DRY_RUN", False)
     use_claude: bool = _bool("USE_CLAUDE", True)
+    low_latency_narration: bool = _bool("LOW_LATENCY_NARRATION", True)
     # Default false: Twilio <Say> works without keys; <Play> needs ElevenLabs + public URL.
     use_elevenlabs: bool = _bool("USE_ELEVENLABS", False)
 
@@ -88,6 +89,15 @@ class Config:
         if not key or key in {"...", "ELEVENLABS_API_KEY"}:
             return False
         base = (self.public_base_url or "").lower().rstrip("/")
+        if "127.0.0.1" in base or "localhost" in base:
+            return False
+        return True
+
+    def public_webhook_enabled(self) -> bool:
+        """True when Twilio can call back into this service."""
+        base = (self.public_base_url or "").lower().rstrip("/")
+        if not base.startswith(("http://", "https://")):
+            return False
         if "127.0.0.1" in base or "localhost" in base:
             return False
         return True

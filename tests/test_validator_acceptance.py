@@ -204,10 +204,8 @@ def test_tier3_with_benign_pattern_is_clamped_to_ambient() -> None:
     assert "walking_through" in result.reason
 
 
-def test_tier3_with_loitering_is_passed_through_for_router_to_decide() -> None:
-    """Loitering is no longer auto-clamped at the validator. The router's
-    confidence floor + tier mapping handles non-theft patterns; this lets
-    Qwen tier-up legitimately ambiguous cases."""
+def test_tier3_with_loitering_is_clamped_to_notice() -> None:
+    """Loitering should not ring the phone; it stays at notice level."""
     raw = (
         '{"tier": 3, "behavior_pattern": "loitering", "confidence": 0.7, '
         '"suspect_description": "young woman in green jacket near the door", '
@@ -215,8 +213,8 @@ def test_tier3_with_loitering_is_passed_through_for_router_to_decide() -> None:
         '"time_elapsed": "x"}'
     )
     result = evaluate_classifier_output(raw, 1.0)
-    assert result.status == "accept"
-    assert result.payload["tier"] == 3
+    assert result.status == "degrade"
+    assert result.payload["tier"] == 2
     assert result.payload["behavior_pattern"] == "loitering"
 
 

@@ -1,4 +1,4 @@
-from action_router.twiml import play_response, play_with_gather, say_response
+from action_router.twiml import play_response, play_with_gather, say_response, say_with_gather
 
 
 def test_say_response_escapes_xml() -> None:
@@ -23,4 +23,12 @@ def test_play_with_gather_collects_one_digit() -> None:
     xml = play_with_gather("https://example.com/a.mp3", "https://example.com/cb")
     assert 'numDigits="1"' in xml
     assert 'action="https://example.com/cb"' in xml
+    assert "<Hangup/>" in xml
+
+
+def test_say_with_gather_collects_one_digit() -> None:
+    xml = say_with_gather("hello there", "https://example.com/cb")
+    assert 'numDigits="1"' in xml
+    assert 'action="https://example.com/cb"' in xml
+    assert "<Say" in xml and "hello there" in xml
     assert "<Hangup/>" in xml

@@ -61,6 +61,7 @@ def test_build_event_matches_action_router_shape() -> None:
     )
     assert set(event.keys()) == set(baseline.keys())
     assert event["tier_name"] == "ALERT"
+    assert event["incident_id"].startswith("inc_")
     assert event["yolo_classes"] == ["person"]
     assert event["behavior_pattern"] == "taking_item"
     assert event["scene"] == "the library aisle"

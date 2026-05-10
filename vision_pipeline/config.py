@@ -59,7 +59,8 @@ def _zone(key: str, default: tuple[float, float, float, float]) -> tuple[float, 
         return default
 
 
-# Carryable label set (configurable via env CARRYABLE_LABELS="backpack,handbag,suitcase")
+# Carryable / removable label set (configurable via env
+# CARRYABLE_LABELS="backpack,handbag,suitcase,laptop,cell phone")
 def _label_set(key: str, default: tuple[str, ...]) -> tuple[str, ...]:
     raw = os.getenv(key)
     if not raw:
@@ -107,13 +108,22 @@ class Config:
 
     # Carryable label set
     carryable_labels: tuple[str, ...] = _label_set(
-        "CARRYABLE_LABELS", ("backpack", "handbag", "suitcase")
+        "CARRYABLE_LABELS", ("backpack", "handbag", "suitcase", "laptop", "cell phone")
     )
 
     # Behavior tuning
     interaction_frames_required: int = _int("INTERACTION_FRAMES_REQUIRED", 4)
     min_dwell_seconds: float = _float("MIN_DWELL_SECONDS", 0.6)
     carryable_grace_seconds: float = _float("CARRYABLE_GRACE_SECONDS", 0.6)
+    stationary_object_min_seconds: float = _float("STATIONARY_OBJECT_MIN_SECONDS", 1.0)
+    removal_interaction_window_seconds: float = _float(
+        "REMOVAL_INTERACTION_WINDOW_SECONDS", 2.0
+    )
+    stationary_object_distance_pixels: float = _float(
+        "STATIONARY_OBJECT_DISTANCE_PIXELS", 48.0
+    )
+    person_min_area_ratio: float = _float("PERSON_MIN_AREA_RATIO", 0.015)
+    edge_margin_ratio: float = _float("EDGE_MARGIN_RATIO", 0.04)
     person_exit_seconds: float = _float("PERSON_EXIT_SECONDS", 1.5)
     scene_clear_seconds: float = _float("SCENE_CLEAR_SECONDS", 3.5)
     pair_iou_threshold: float = _float("PAIR_IOU_THRESHOLD", 0.0)
@@ -125,6 +135,7 @@ class Config:
     # Qwen multi-frame inference: pass the most recent N frames (1-4) so the
     # model can see motion (punching, grabbing, fleeing). 1 = single-frame.
     qwen_frames_per_inference: int = _int("QWEN_FRAMES_PER_INFERENCE", 3)
+    qwen_frame_lookback_seconds: float = _float("QWEN_FRAME_LOOKBACK_SECONDS", 1.2)
 
     # Demo fast-path: classify on any person sighting if the behavior tracker
     # hasn't fired in N seconds. Trades some precision for reliability so demos

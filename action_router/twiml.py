@@ -15,6 +15,26 @@ def say_response(text: str, voice: str = "alice", language: str = "en-US") -> st
     )
 
 
+def say_with_gather(
+    text: str,
+    action_url: str,
+    *,
+    voice: str = "alice",
+    language: str = "en-US",
+    num_digits: int = 1,
+) -> str:
+    """Speak text, then collect DTMF digits for simple IVR decisions."""
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        "<Response>"
+        f'<Gather numDigits="{num_digits}" action="{escape(action_url)}" method="POST">'
+        f'<Say voice="{voice}" language="{language}">{escape(text)}</Say>'
+        "</Gather>"
+        "<Hangup/>"
+        "</Response>"
+    )
+
+
 def play_response(media_url: str, fallback_text: str | None = None) -> str:
     """`<Response><Play>URL</Play></Response>` — used after ElevenLabs synthesis.
 

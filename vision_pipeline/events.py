@@ -29,8 +29,8 @@ from typing import Any
 VISION_LANGUAGE_PROMPT = """You are SafeWatch, a sharp-eyed home security classifier.
 You will be shown 1-3 RECENT FRAMES from the same camera (the most recent
 frame is last). Your job: describe the person and what they are doing
-specifically and confidently. A vague answer is worse than a slightly
-wrong one — give your best concrete guess.
+specifically and confidently. Do NOT guess details that are not clearly
+visible in the frames.
 
 Pick ONE behavior_pattern that matches the action across the frames:
   walking_through   - passing by, no interaction with property
@@ -53,9 +53,12 @@ DESCRIPTION RULES (be specific):
 - ALWAYS include at least one CLOTHING COLOR. If you're not 100% sure, give
   your best guess ("dark shirt", "light jacket"). NEVER write "person of
   unclear appearance" — pick the most likely descriptor.
-- ALWAYS include build/height when visible: "tall", "short", "average build".
+- Include build/height only when clearly visible: "tall", "short", "average build".
 - Include accessories that stand out: "with a backpack", "wearing a cap",
   "carrying a bag".
+- If only the upper body is visible, describe only upper-body clothing,
+  face, hair, and accessories. Do NOT guess jeans, pants, shoes, or other
+  lower-body details unless you can clearly see them.
 - 6-18 words. Lead with the most obvious visual feature.
 - Examples of GOOD descriptions:
     "tall man in a black shirt and gray jeans with a backpack"
@@ -235,13 +238,11 @@ def evaluate_classifier_output(
             "degrade", payload, "low-value content; degraded to tier 1"
         )
 
-    # Semantic guard: only clamp tier when Qwen EXPLICITLY chose a benign
-    # pattern. If pattern is missing or the model upgraded to a theft/threat
-    # pattern we trust the tier — otherwise we'd suppress every real event
-    # because the model defaults to "other_benign" when uncertain.
+    # Semantic guard: only clamp explicitly benign / low-grade patterns so
+    # they cannot escalate into phone-call tiers by accident.
     pattern_explicit = payload.get("_pattern_was_explicit", False)
     pattern = payload.get("behavior_pattern", "other_benign")
-    if pattern_explicit and pattern in {"walking_through", "other_benign"}:
+    if pattern_explicit and pattern in {"walking_through", "other_benign", "loitering", "leaving_item"}:
         max_tier = BEHAVIOR_PATTERN_MAX_TIER.get(pattern, 1)
         if payload["tier"] > max_tier:
             original_tier = payload["tier"]
@@ -274,10 +275,12 @@ def build_event(
     yolo_classes: list[str],
     raw_classifier: str,
     timestamp: float | None = None,
+    incident_id: str | None = None,
 ) -> dict[str, Any]:
     tier = int(classification["tier"])
     return {
         "event_id": f"evt_{uuid.uuid4().hex[:12]}",
+        "incident_id": incident_id or f"inc_{uuid.uuid4().hex[:12]}",
         "node_id": node_id,
         "tier": tier,
         "tier_name": TIER_LABELS.get(tier, "UNKNOWN"),
