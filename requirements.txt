@@ -21,7 +21,16 @@ transformers>=4.55
 ultralytics>=8.3
 pillow>=10.4
 
+# Phone-infra lane (services/inbound_voice + services/voice_state)
+redis>=5.0
+pymongo>=4.8
+cryptography>=44.0   # AES-256-GCM envelope encryption for recordings + transcripts
+phonenumbers>=8.13   # E.164 normalization, country/area-code lookup for jurisdictions
+boto3>=1.34          # R2 (S3-compatible) for encrypted recordings; AWS KMS later
+
 # Dev / tests
 pytest>=8.0
 pytest-mock>=3.14
 httpx>=0.27        # required by fastapi.testclient.TestClient
+fakeredis>=2.20    # in-memory Redis for state-machine + onboarding tests
+mongomock>=4.1     # in-memory Mongo for privacy/audit tests
