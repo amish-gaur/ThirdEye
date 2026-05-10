@@ -629,13 +629,17 @@ _CARRYABLE_BOX_COLOR = (255, 80, 220)
 _CARDBOARD_BOX_COLOR = (255, 0, 255)
 
 
-_OVERLAY_MIN_CONFIDENCE = 0.70
-# Cardboard threshold is much lower than persons because YOLO-World
-# typically scores cardboard at 0.10-0.50 even when correct (it was
-# trained with the prompt "cardboard box", not as a fixed COCO class).
-# Without this, the magenta box never appears even though the theft
-# tracker has already accepted the same detection.
-_OVERLAY_MIN_CARDBOARD_CONFIDENCE = 0.10
+# Person threshold matches the confidence floor the theft tracker would
+# act on, so the overlay shows what the system actually sees. 0.70 was
+# too strict — when a subject fills the frame, YOLO scores them ~0.50-0.65
+# because only a partial torso is visible, and they vanished from the box
+# overlay even though they were being tracked.
+_OVERLAY_MIN_CONFIDENCE = 0.50
+# Cardboard floor balances "rendering real boxes" against "hallucinating
+# on chair backs and table edges". YOLO-World false-positives at 0.10-0.20
+# on any brown rectangular shape; legitimate cardboard typically clears
+# 0.30. Matches the theft tracker's CARDBOARD_BOX_MIN_CONFIDENCE default.
+_OVERLAY_MIN_CARDBOARD_CONFIDENCE = 0.30
 
 
 def _draw_overlay(
@@ -705,6 +709,43 @@ def _draw_overlay(
         is_candidate = cand_carryable_box is not None and _box_iou(det.box, cand_carryable_box) > 0.3
         color = _CARDBOARD_BOX_COLOR if is_cardboard else _CARRYABLE_BOX_COLOR
         _draw(det, color, 3 if is_candidate else 2)
+
+    # Persistent anchor draw — fixes the static-scene flicker the user noticed.
+    # YOLO-World scores stationary cardboard wobbly (often dipping below the
+    # 0.30 overlay threshold for several frames in a row), so a per-frame
+    # draw makes the magenta box vanish until the user moves and the score
+    # re-spikes. Once the theft tracker has *anchored* a box (= multiple
+    # consistent detections over `anchor_seconds`), we trust it and keep
+    # rendering the anchor regardless of what THIS frame's confidence was.
+    # The anchor naturally clears when the box leaves the scene long enough,
+    # so this won't pin a stale ghost.
+    anchor_box = decision.package_anchor_box
+    if anchor_box is not None:
+        anchor_label = (decision.package_anchor_label or "cardboard box").strip().lower()
+        is_cardboard_anchor = anchor_label == "cardboard box"
+        anchor_color = (
+            _CARDBOARD_BOX_COLOR if is_cardboard_anchor else _CARRYABLE_BOX_COLOR
+        )
+        # Skip if the per-frame loop above already drew a box at this spot.
+        already_covered = False
+        for det in decision.carryable_boxes:
+            det_label = det.label.strip().lower()
+            det_min_conf = (
+                _OVERLAY_MIN_CARDBOARD_CONFIDENCE
+                if det_label == "cardboard box"
+                else _OVERLAY_MIN_CONFIDENCE
+            )
+            if det.confidence >= det_min_conf and _box_iou(det.box, anchor_box) > 0.3:
+                already_covered = True
+                break
+        if not already_covered:
+            ax1, ay1, ax2, ay2 = (int(round(v)) for v in anchor_box)
+            ax1 = min(max(0, ax1), max(0, w - 1))
+            ax2 = min(max(0, ax2), max(0, w - 1))
+            ay1 = min(max(0, ay1), max(0, h - 1))
+            ay2 = min(max(0, ay2), max(0, h - 1))
+            if ax2 > ax1 and ay2 > ay1:
+                cv2.rectangle(frame_bgr, (ax1, ay1), (ax2, ay2), anchor_color, 2)
 
 
 def _draw_qwen_panel(frame_bgr: Any, cls: "LastClassification") -> None:
