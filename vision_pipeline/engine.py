@@ -176,6 +176,14 @@ _ANCHOR_CONFIRM_SECONDS = 0.5        # sustained detection before anchor goes "l
 _ANCHOR_INHERIT_WINDOW_SECONDS = 6.0 # how long a face can be hidden and still inherit
 _ANCHOR_EXPIRE_SECONDS = 8.0         # no person-box overlap this long => drop anchor
 _ANCHOR_IOU = 0.30                   # IoU threshold for "same person across frames"
+# Whole-system safety buffer: once ANY enrolled identity has been seen
+# (matched directly OR inherited via anchor), no theft alert may fire for
+# this many seconds — even if other unrecognized persons share the frame.
+# Rationale: face recognition flickers under motion, anchors flicker when
+# YOLO boxes drift, and the demo can't tolerate a single false alert ringing
+# 4 phones. This is the user-facing "if Aditya was here in the last N
+# seconds, don't even consider firing" safety the demo needs.
+_KNOWN_SAFETY_BUFFER_SECONDS = 5.0
 
 
 @dataclass
@@ -1030,6 +1038,12 @@ class VisionEngine:
         # face-detection dropouts (subject turns to grab the box, lighting
         # changes, motion blur) so suppression doesn't blink off mid-action.
         self._identity_anchors: list[_IdentityAnchor] = []
+        # Wall-clock timestamp of the last frame in which a known identity
+        # (direct match OR anchor-inherited) was visible. The processing
+        # loop suppresses theft alerts for _KNOWN_SAFETY_BUFFER_SECONDS
+        # after this time — see the docstring on the constant.
+        self._last_known_visible_at: float = 0.0
+        self._last_known_name: str = ""
         self._prev_motion_gray: Any | None = None
         self._artifact_dir_ensured = False
         # Demo-mode flag driving carryable label set
@@ -1269,6 +1283,14 @@ class VisionEngine:
                 "Identity anchor expired (subject left frame, no overlap for >%.1fs)",
                 _ANCHOR_EXPIRE_SECONDS,
             )
+
+        # Step 4: refresh the safety buffer if any known identity is visible
+        # in this frame (whether directly matched or inherited via anchor).
+        for v in augmented:
+            if v is not None and v.is_known:
+                self._last_known_visible_at = now
+                self._last_known_name = v.name
+                break
 
         return augmented
 
@@ -1661,28 +1683,37 @@ class VisionEngine:
                 self.latest_decision = decision
 
             should_fire = theft_decision.should_emit
-            if should_fire and face_verdicts:
-                # Suppress only when EVERY visible person matched a known
-                # enrolled identity. Fail-open on no_face / face_too_small /
-                # low_quality / extreme_yaw so a stranger at a bad angle
-                # never gets silently whitelisted.
-                known = [v for v in face_verdicts if v.is_known]
-                if known and len(known) == len(face_verdicts):
-                    names = sorted({v.name for v in known})
+            if should_fire and self.face_filter is not None:
+                # Safety-buffer gate: once an enrolled identity (Aditya in
+                # the demo) has been seen in the last _KNOWN_SAFETY_BUFFER_
+                # SECONDS — directly matched or inherited via anchor — no
+                # theft alert may fire. This deliberately ignores other
+                # unrecognized persons in the frame; the user's intent is
+                # "if a known household member is on scene, trust them and
+                # don't ring 4 phones." Fail-open on first ever frame and
+                # after the buffer fully expires.
+                since_known = captured_at - self._last_known_visible_at
+                if (
+                    self._last_known_visible_at > 0
+                    and since_known < _KNOWN_SAFETY_BUFFER_SECONDS
+                ):
                     log.info(
-                        "Face filter SUPPRESS: every visible person matched "
-                        "enrolled identity (%s); skipping theft emit %s",
-                        ", ".join(names),
+                        "Face filter SAFETY-SUPPRESS: %s seen %.1fs ago "
+                        "(within %.1fs buffer); skipping theft emit %s",
+                        self._last_known_name or "?",
+                        since_known,
+                        _KNOWN_SAFETY_BUFFER_SECONDS,
                         self._active_incident_id,
                     )
                     should_fire = False
                 else:
                     log.info(
-                        "Face filter PASS (alert allowed): %s",
+                        "Face filter PASS (alert allowed): verdicts=%s buffer_expired=%.1fs",
                         ", ".join(
                             f"{v.name or v.reason}({v.similarity:.2f})"
                             for v in face_verdicts
-                        ),
+                        ) or "no-persons",
+                        since_known if self._last_known_visible_at > 0 else -1.0,
                     )
             if should_fire and self._should_suppress_duplicate_theft_emit():
                 log.info(
