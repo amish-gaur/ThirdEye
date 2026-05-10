@@ -427,7 +427,7 @@ def _tier_emergency(event: Dict[str, Any], cfg: Config, result: ActionResult) ->
             seen.add(num)
     for idx, num in enumerate(cfg.neighbor_phones, start=1):
         if num and num not in seen:
-            targets.append((f"neighbor_{idx}", num))
+            targets.append((f"neighbor{idx}", num))
             seen.add(num)
 
     if not targets:

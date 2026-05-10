@@ -60,9 +60,9 @@ class Config:
     homeowner_phone: str = os.getenv("HOMEOWNER_PHONE", "")
     emergency_dispatch_phone: str = os.getenv("EMERGENCY_DISPATCH_PHONE", "")
     family_phone: str = os.getenv("FAMILY_PHONE", "")
-    # Comma-separated extra fan-out phones used by tier-4 EMERGENCY. Anything
-    # already covered by homeowner / dispatch / family is deduped at dispatch
-    # time so the same number never rings twice in one incident.
+    # Additional contacts dialed at tier 4 alongside dispatch/homeowner/family.
+    # Comma-separated E.164 numbers. Deduped against the primary three at fan-out
+    # time so the same number isn't called twice.
     neighbor_phones: tuple[str, ...] = tuple(
         n.strip()
         for n in os.getenv("NEIGHBOR_PHONES", "").split(",")
