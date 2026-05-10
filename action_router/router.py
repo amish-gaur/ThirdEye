@@ -35,7 +35,8 @@ TIER ESCALATION
 ---------------
     1 AMBIENT   - log only
     2 NOTICE    - text-only iMessage fan-out (no call). Optional Twilio SMS.
-    3 ALERT     - one Twilio voice call (homeowner) + iMessage fan-out w/ clip
+    3 ALERT     - parallel: Twilio voice call (homeowner) + Twilio SMS (homeowner
+                  and family if FAMILY_PHONE) + iMessage fan-out w/ clip.
     4 EMERGENCY - three parallel voice calls (dispatch + homeowner + family)
                   + iMessage fan-out w/ clip, all in parallel via ThreadPoolExecutor
 
@@ -355,11 +356,47 @@ def _tier_alert(event: Dict[str, Any], cfg: Config, result: ActionResult) -> Act
     script = generate_script(event, cfg)
     result.script = script
     media_url = _try_synthesize(script, cfg, result, prefix="alert_")
-    call = _call(cfg.homeowner_phone, script, media_url, cfg, result)
-    if call:
-        result.actions.append("call_homeowner")
-    # Fan out iMessage alongside the call so the team has a written record + clip.
+
+    # Fire iMessage first — it delivers faster than the Twilio call rings, so
+    # recipients see the clip + description before any phone goes off.
     _fanout_imessage(event, cfg, result, attach_clip=cfg.imessage_attach_clip, label="alert")
+
+    # Twilio call (homeowner) + Twilio SMS (homeowner, family if FAMILY_PHONE)
+    # in parallel so the homeowner has a written record even before the call
+    # connects, and Android-only family contacts (no iMessage) still get text.
+    sms_body = _format_alert_sms_body(event)
+    sms_targets = [("homeowner", cfg.homeowner_phone)]
+    if cfg.family_phone:
+        sms_targets.append(("family", cfg.family_phone))
+
+    tasks: List[tuple[str, str, str, Optional[str]]] = [
+        ("call_homeowner", "call", cfg.homeowner_phone, None),
+    ]
+    for label, num in sms_targets:
+        tasks.append((f"sms_{label}", "sms", num, None))
+
+    with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+        futures = {}
+        for action_label, kind, to, _unused in tasks:
+            if kind == "call":
+                fut = pool.submit(_place_call_safe, to, script, media_url, cfg)
+            else:
+                fut = pool.submit(_send_sms_safe, to, sms_body, cfg)
+            futures[fut] = (action_label, kind)
+        for fut in as_completed(futures):
+            action_label, kind = futures[fut]
+            try:
+                outcome = fut.result()
+                if outcome is None:
+                    continue
+                if kind == "call":
+                    result.calls.append(outcome)
+                else:
+                    result.messages.append(outcome)
+                result.actions.append(action_label)
+            except Exception as exc:
+                log.exception("Tier 3 %s failed", action_label)
+                result.errors.append(f"{action_label}: {exc}")
     return result
 
 
@@ -424,6 +461,29 @@ def _try_synthesize(
         log.warning("ElevenLabs synthesis failed; falling back to <Say>: %s", exc)
         result.errors.append(f"tts: {exc}")
         return None
+
+
+def _format_alert_sms_body(event: Dict[str, Any]) -> str:
+    summary = event.get("one_line_summary", "Possible theft at your home.")
+    desc = event.get("suspect_description", "")
+    elapsed = event.get("time_elapsed", "just now")
+    if desc:
+        return (
+            f"SafeWatch ALERT: {summary} ({desc}) — {elapsed}. "
+            "Active alert; we are calling you now."
+        )
+    return (
+        f"SafeWatch ALERT: {summary} — {elapsed}. "
+        "Active alert; we are calling you now."
+    )
+
+
+def _send_sms_safe(to: str, body: str, cfg: Config) -> Optional[SmsResult]:
+    try:
+        return send_sms(to, body, config=cfg)
+    except Exception:
+        log.exception("SMS to %s failed", to)
+        raise
 
 
 def _call(
