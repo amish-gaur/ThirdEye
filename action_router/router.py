@@ -409,12 +409,27 @@ def _tier_emergency(event: Dict[str, Any], cfg: Config, result: ActionResult) ->
     # they pick up.
     _fanout_imessage(event, cfg, result, attach_clip=cfg.imessage_attach_clip, label="emergency")
 
-    targets = [
+    # Build the call list: known slots first, then any extra neighbor numbers
+    # from NEIGHBOR_PHONES (deduped on the raw E.164 string). The dedup is
+    # important: the .env intentionally repeats family/dispatch numbers in
+    # NEIGHBOR_PHONES for legibility, and we don't want to dial the same line
+    # twice in one incident.
+    candidate_targets = [
         ("dispatch", cfg.emergency_dispatch_phone),
         ("homeowner", cfg.homeowner_phone),
         ("family", cfg.family_phone),
     ]
-    targets = [(label, num) for label, num in targets if num]
+    seen: set[str] = set()
+    targets: list[tuple[str, str]] = []
+    for label, num in candidate_targets:
+        if num and num not in seen:
+            targets.append((label, num))
+            seen.add(num)
+    for idx, num in enumerate(cfg.neighbor_phones, start=1):
+        if num and num not in seen:
+            targets.append((f"neighbor_{idx}", num))
+            seen.add(num)
+
     if not targets:
         result.errors.append("no emergency contacts configured")
         return result
@@ -545,6 +560,29 @@ def _format_imessage_body(event: Dict[str, Any]) -> str:
     return "  ·  ".join(parts)
 
 
+def _imessage_recipient_union(cfg: Config) -> list[str]:
+    """Recipients = IMESSAGE_RECIPIENTS ∪ {homeowner} ∪ NEIGHBOR_PHONES, deduped.
+
+    The demo .env intentionally splits phone slots three ways for clarity
+    (homeowner / dispatch+family / neighbor mesh), but for iMessage we want
+    everyone in the loop on one fan-out. Dedupe on the raw E.164 string so
+    overlap between slots only buzzes once.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    sources: list[str] = []
+    sources.extend(cfg.imessage_recipients)
+    if cfg.homeowner_phone:
+        sources.append(cfg.homeowner_phone)
+    sources.extend(cfg.neighbor_phones)
+    for num in sources:
+        n = (num or "").strip()
+        if n and n not in seen:
+            out.append(n)
+            seen.add(n)
+    return out
+
+
 def _fanout_imessage(
     event: Dict[str, Any],
     cfg: Config,
@@ -553,16 +591,17 @@ def _fanout_imessage(
     attach_clip: bool,
     label: str,
 ) -> None:
-    """Send the same iMessage to every recipient in IMESSAGE_RECIPIENTS.
+    """Send the same iMessage to every recipient in the union fan-out list.
 
-    No-ops when iMessage is disabled or no recipients are configured. Errors
-    on individual sends are logged but don't fail the action — calls remain
+    No-ops when iMessage is disabled or the union is empty. Errors on
+    individual sends are logged but don't fail the action — calls remain
     the primary signal path; iMessage is a parallel best-effort channel.
     """
     if not cfg.imessage_enabled:
         return
-    if not cfg.imessage_recipients:
-        log.info("iMessage enabled but IMESSAGE_RECIPIENTS empty — skipping")
+    recipients = _imessage_recipient_union(cfg)
+    if not recipients:
+        log.info("iMessage enabled but no recipients across all phone slots — skipping")
         return
 
     body = _format_imessage_body(event)
@@ -576,7 +615,7 @@ def _fanout_imessage(
     if cfg.dry_run:
         log.info(
             "[dry_run] would iMessage %d recipients (%s): %s%s",
-            len(cfg.imessage_recipients),
+            len(recipients),
             label,
             body,
             f" + {attachment}" if attachment else "",
@@ -584,7 +623,7 @@ def _fanout_imessage(
         result.actions.append(f"imessage_dry_run_{label}")
         return
 
-    msgs = send_imessage_fanout(list(cfg.imessage_recipients), body, attachment=attachment)
+    msgs = send_imessage_fanout(recipients, body, attachment=attachment)
     result.messages.extend(
         SmsResult(to=m.to, sid="imessage", body=body, dry_run=False)
         for m in msgs

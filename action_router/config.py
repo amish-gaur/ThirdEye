@@ -60,6 +60,14 @@ class Config:
     homeowner_phone: str = os.getenv("HOMEOWNER_PHONE", "")
     emergency_dispatch_phone: str = os.getenv("EMERGENCY_DISPATCH_PHONE", "")
     family_phone: str = os.getenv("FAMILY_PHONE", "")
+    # Comma-separated extra fan-out phones used by tier-4 EMERGENCY. Anything
+    # already covered by homeowner / dispatch / family is deduped at dispatch
+    # time so the same number never rings twice in one incident.
+    neighbor_phones: tuple[str, ...] = tuple(
+        n.strip()
+        for n in os.getenv("NEIGHBOR_PHONES", "").split(",")
+        if n.strip()
+    )
 
     # iMessage fan-out (macOS-only). When enabled, every tier-2+ event also
     # sends an iMessage with the description + clip thumbnail to each

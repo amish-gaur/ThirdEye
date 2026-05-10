@@ -654,8 +654,8 @@ def _draw_overlay(
             return
         cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), color, thickness)
         # Confidence chip in the top-left of the box. Filled rectangle with
-        # the box's color, tight white text on top — mirrors the box hue so
-        # green = person / magenta = cardboard / pink = other carryable.
+        # the box's color, tight black text on top — black contrasts well
+        # against the bright green / magenta / pink chip backgrounds.
         label = f"{det.confidence:.2f}"
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
         chip_w = tw + 8
@@ -676,7 +676,7 @@ def _draw_overlay(
             (chip_x1 + 4, text_y),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.5,
-            (255, 255, 255),
+            (0, 0, 0),
             1,
             cv2.LINE_AA,
         )
@@ -765,6 +765,28 @@ _PRETTY_TIER = {
 }
 
 _PRETTY_BAR = "━" * 60
+
+
+_READY_BANNER_LINES = (
+    "██████╗  ███████╗  █████╗  ██████╗  ██╗   ██╗",
+    "██╔══██╗ ██╔════╝ ██╔══██╗ ██╔══██╗ ╚██╗ ██╔╝",
+    "██████╔╝ █████╗   ███████║ ██║  ██║  ╚████╔╝ ",
+    "██╔══██╗ ██╔══╝   ██╔══██║ ██║  ██║   ╚██╔╝  ",
+    "██║  ██║ ███████╗ ██║  ██║ ██████╔╝    ██║   ",
+    "╚═╝  ╚═╝ ╚══════╝ ╚═╝  ╚═╝ ╚═════╝     ╚═╝   ",
+)
+
+
+def _print_ready_banner() -> None:
+    """Big block-letter READY shown when warmup completes.
+
+    Loud on purpose: this is the visual cue during a demo that everything
+    is hot and the next frame will fire detection at steady-state latency.
+    """
+    print()
+    for line in _READY_BANNER_LINES:
+        print(f"{_PRETTY_GREEN}{_PRETTY_BOLD}{line}{_PRETTY_RESET}")
+    print()
 
 
 def _print_pretty_event(event: dict[str, Any]) -> None:
@@ -967,15 +989,21 @@ class VisionEngine:
             classifier_label = f"cloud:{self.config.cloud_classifier_model}"
         else:
             classifier_label = f"qwen:{self.config.qwen_model}"
-        print()
+
+        # Demo-critical: pay the cold-start cost NOW (graph compile, MPS
+        # warmup, processor caches, cloud TLS handshake) so the first real
+        # frame after the banner detects in steady-state latency.
+        warm_summary = self._prewarm()
+
+        _print_ready_banner()
         print(f"{_PRETTY_GREEN}{_PRETTY_BOLD}{_PRETTY_BAR}{_PRETTY_RESET}")
-        print(f"{_PRETTY_GREEN}{_PRETTY_BOLD}  ✓ ThirdEye vision engine ready{_PRETTY_RESET}")
         print(f"  {_PRETTY_DIM}device  {_PRETTY_RESET} {self.device}")
         print(f"  {_PRETTY_DIM}yolo    {_PRETTY_RESET} {self.config.yolo_model}")
         print(f"  {_PRETTY_DIM}vlm     {_PRETTY_RESET} {classifier_label}")
         print(f"  {_PRETTY_DIM}cardbrd {_PRETTY_RESET} {self._cardboard_backend_active}")
         print(f"  {_PRETTY_DIM}capture {_PRETTY_RESET} {self.config.capture_width}x{self.config.capture_height}")
         print(f"  {_PRETTY_DIM}router  {_PRETTY_RESET} {'on' if self.config.post_events else 'off'}")
+        print(f"  {_PRETTY_DIM}warmup  {_PRETTY_RESET} {warm_summary}")
         print(f"{_PRETTY_GREEN}{_PRETTY_BOLD}{_PRETTY_BAR}{_PRETTY_RESET}")
         print()
         log.info(
@@ -1042,6 +1070,78 @@ class VisionEngine:
                 "opencv" if self._cardboard_backend_active == "auto" else "off"
             )
 
+    def _prewarm(self) -> str:
+        """Run a dummy inference through every loaded model so the first real
+        frame after startup hits steady-state latency.
+
+        Demo-critical: without this the first YOLO call pays MPS graph
+        compile (~1s), the first Qwen `generate()` pays caches + kernel
+        compile (~2-3s), and the first cloud round-trip pays TLS handshake.
+        We swallow the cost here so the camera-loop's first frame reports
+        a normal ~50ms detection instead of stalling for several seconds.
+        """
+        import numpy as np
+
+        t0 = time.time()
+        statuses: list[str] = []
+
+        dummy = np.zeros(
+            (self.config.capture_height, self.config.capture_width, 3),
+            dtype=np.uint8,
+        )
+
+        try:
+            self.yolo.predict(
+                source=dummy,
+                classes=self._monitored_class_ids,
+                conf=min(self.config.person_confidence, self.config.carryable_confidence),
+                device=self.device,
+                imgsz=self.config.yolo_input_size,
+                verbose=False,
+            )
+            # Also warm the busy-state imgsz so dynamic switches don't recompile.
+            busy = max(64, int(self.config.yolo_input_size_busy or 0))
+            if busy and busy != self.config.yolo_input_size:
+                self.yolo.predict(
+                    source=dummy,
+                    classes=self._monitored_class_ids,
+                    conf=0.25,
+                    device=self.device,
+                    imgsz=busy,
+                    verbose=False,
+                )
+            statuses.append("yolo")
+        except Exception as exc:
+            log.warning("YOLO prewarm failed: %s", exc)
+            statuses.append("yolo:err")
+
+        if self.yolo_world is not None:
+            try:
+                self.yolo_world.predict(
+                    source=dummy,
+                    conf=float(self.config.yolo_world_confidence),
+                    device=self.device,
+                    imgsz=max(64, int(self.config.yolo_world_input_size)),
+                    verbose=False,
+                )
+                statuses.append("yolo-world")
+            except Exception as exc:
+                log.warning("YOLO-World prewarm failed: %s", exc)
+                statuses.append("yolo-world:err")
+
+        if not self.config.mock_classifier and (
+            self.qwen is not None or self.cloud_classifier is not None
+        ):
+            try:
+                self._classify_with_qwen([dummy], 0.0)
+                statuses.append("vlm")
+            except Exception as exc:
+                log.warning("VLM prewarm failed: %s", exc)
+                statuses.append("vlm:err")
+
+        elapsed = time.time() - t0
+        return f"{', '.join(statuses) or 'none'} ({elapsed:.1f}s)"
+
     # ---------------------------------------------------------------------
     # Capture loop
     # ---------------------------------------------------------------------
@@ -1071,6 +1171,19 @@ class VisionEngine:
             daemon=True,
         )
         self.capture_thread.start()
+
+        # Demo-critical: block until the camera has produced at least one
+        # real frame before starting the processing worker. Otherwise the
+        # first ~100-500ms of "running" is just polling None frames while
+        # the webcam negotiates, and a fast suspect can walk through
+        # before frame 0 arrives.
+        camera_warm_deadline = time.time() + 3.0
+        while time.time() < camera_warm_deadline:
+            with self.capture_lock:
+                if self.latest_capture_frame is not None:
+                    break
+            time.sleep(0.02)
+
         self.processing_thread = threading.Thread(
             target=self._processing_worker,
             name="vision-processing",
@@ -2297,16 +2410,18 @@ class VisionEngine:
     def _fire_theft_alert(self, event: dict[str, Any], frame_bgr: Any) -> None:
         """Hand a confirmed-theft event to the action router.
 
-        When ACTION_ROUTER_BASE_URL is set we use the spec path: save the
-        suspect frame, POST it to /upload, then fire a tier-4 EMERGENCY
-        event with `clip_path` set so the router can attach it to the
-        iMessage fan-out. When the env var isn't set we fall back to the
-        legacy publisher (config.action_router_url) so dev/test still work.
+        Default path is in-process: theft_alert.trigger_theft_alert imports
+        action_router.execute_action and runs the T4 EMERGENCY playbook
+        directly on this machine — parallel Twilio voice calls + parallel
+        iMessage fan-out via AppleScript on this Mac, with the suspect
+        frame attached. No /upload, no second-Mac dependency.
+
+        HTTP routing (POST to a remote action router) is opt-in via
+        ACTION_ROUTER_USE_HTTP=true; theft_alert handles the branch.
+        Legacy direct-publish fallback only fires if trigger_theft_alert
+        itself raised, so dev/test still see something land at the router.
         """
         if not self.config.post_events:
-            return
-        if not os.environ.get("ACTION_ROUTER_BASE_URL"):
-            self._publish_event(event)
             return
         try:
             trigger_theft_alert(

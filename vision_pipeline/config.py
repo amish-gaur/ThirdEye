@@ -209,5 +209,29 @@ class Config:
     face_body_reid_threshold: float = _float("FACE_BODY_REID_THRESHOLD", 0.70)
     face_emit_ambient_event: bool = _bool("FACE_EMIT_AMBIENT_EVENT", False)
 
+    # Theft tracker / engine tuning. Restored to the values committed in
+    # 0fa24ed (the YOLO-only theft-decision refactor); a later merge dropped
+    # them from this file while leaving the references in engine.py and
+    # theft_tracker.py.
+    yolo_input_size_busy: int = _int("YOLO_INPUT_SIZE_BUSY", 512)
+    capture_buffer_drain_grabs: int = _int("CAPTURE_BUFFER_DRAIN_GRABS", 2)
+    pause_detection_while_classifying: bool = _bool(
+        "PAUSE_DETECTION_WHILE_CLASSIFYING", True
+    )
+    use_entry_zone: bool = _bool("USE_ENTRY_ZONE", False)
+    feet_motion_enable: bool = _bool("FEET_MOTION_ENABLE", True)
+    feet_motion_min_area: float = _float("FEET_MOTION_MIN_AREA", 1800.0)
+    anchor_seconds: float = _float("ANCHOR_SECONDS", 0.8)
+    move_px: float = _float("MOVE_PX", 36.0)
+    move_iou: float = _float("MOVE_IOU", 0.35)
+    package_missing_grace_seconds: float = _float(
+        "PACKAGE_MISSING_GRACE_SECONDS", 0.8
+    )
+    person_near_package_window_seconds: float = _float(
+        "PERSON_NEAR_PACKAGE_WINDOW_SECONDS", 2.0
+    )
+    interaction_window_seconds: float = _float("INTERACTION_WINDOW_SECONDS", 2.2)
+    theft_cooldown_seconds: float = _float("THEFT_COOLDOWN_SECONDS", 8.0)
+
 
 CONFIG = Config()
