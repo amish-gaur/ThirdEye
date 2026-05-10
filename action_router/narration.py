@@ -19,51 +19,30 @@ log = logging.getLogger("action_router.narration")
 
 TIER_LABELS = {1: "AMBIENT", 2: "NOTICE", 3: "ALERT", 4: "EMERGENCY"}
 
-# Mirrors vision_pipeline.events.HALLUCINATED_LOCATIONS but local to action_router
-# so the router has no hard dep on the vision package.
-HALLUCINATED_LOCATIONS = (
-    "library",
-    "classroom",
-    "school",
-    "office",
-    "kitchen",
-    "bedroom",
-    "bathroom",
-    "living room",
-    "store",
-    "supermarket",
-    "mall",
-    "restaurant",
-    "cafeteria",
-    "hospital",
-    "church",
-    "temple",
-    "mosque",
-    "stadium",
-    "gym",
-    "factory",
-    "warehouse",
-    "subway",
-    "airport",
-)
+# Kept for backwards compatibility. Empty by design — the system now describes
+# whatever scene Qwen actually sees instead of forcing an outdoor-home assumption.
+HALLUCINATED_LOCATIONS: tuple[str, ...] = ()
+
+DEFAULT_SCENE = "the camera view"
 
 MAX_SCRIPT_CHARS = 480  # ~30s of speech; safe for Twilio <Say> and small MP3s.
 
-SYSTEM_PROMPT = """You are SafeWatch, a calm, factual neighborhood security agent.
+SYSTEM_PROMPT = """You are SafeWatch, a calm, factual security agent.
 You will be given a JSON describing a detected event. Produce a SHORT spoken script
-(25-45 words, one short paragraph, no list, no emoji, no markdown) that the homeowner
-or emergency contact will hear over an automated phone call.
+(25-45 words, one short paragraph, no list, no emoji, no markdown) that the
+homeowner or emergency contact will hear over an automated phone call.
 
 Style:
 - Open with "This is your SafeWatch agent." then say what happened.
 - Use the SUSPECT DESCRIPTION verbatim — this is the only physical detail you may
   share. Do NOT invent clothing colors, ages, or features beyond what's given.
+- Use the SCENE verbatim when describing where the event happened
+  (e.g. "at the library entrance", "in the parking lot", "at the front porch").
+  Do NOT make up a location if SCENE is "the camera view".
 - Reference the BEHAVIOR_PATTERN naturally (e.g. "appears to be taking a package",
-  "is loitering near the front door", "is running away with an item"). Never
+  "is loitering near the door", "is running away with an item"). Never
   speak the raw enum string.
 - Do NOT mention numbers, IDs, confidence scores, model names, or coordinates.
-- Do NOT mention indoor places (library, classroom, office, kitchen, etc.);
-  this is an outdoor home camera.
 
 Endings (REQUIRED, exact wording):
 - Tier 4 EMERGENCY: end with "Emergency services have been requested. Stay on the line."
@@ -79,6 +58,7 @@ def build_user_prompt(event: Dict[str, Any]) -> str:
         "Event JSON:\n"
         f"  tier: {tier} ({TIER_LABELS.get(tier, '?')})\n"
         f"  behavior_pattern: {event.get('behavior_pattern', 'other_benign')!r}\n"
+        f"  scene: {event.get('scene', DEFAULT_SCENE)!r}\n"
         f"  suspect_description: {event.get('suspect_description', '')!r}\n"
         f"  one_line_summary: {event.get('one_line_summary', '')!r}\n"
         f"  time_elapsed: {event.get('time_elapsed', 'just now')!r}\n"
@@ -123,22 +103,22 @@ YOLO_LABEL_FRIENDLY = {
 
 
 def sanitize_field(text: str) -> str:
-    """Strip markdown, numeric junk, hallucinated locations; collapse whitespace."""
+    """Strip markdown + numeric junk; collapse whitespace.
+
+    Scene/location words (library, office, parking lot, ...) are intentionally
+    KEPT — Qwen reports the actual scene now and the call narrates it.
+    """
     if not text:
         return ""
     cleaned = re.sub(r"[`*_#>]+", " ", text)
     for pat in _NUMERIC_JUNK_PATTERNS:
         cleaned = pat.sub(" ", cleaned)
-    # Drop now-empty parens/brackets/quoted blanks the scrubber leaves behind.
     cleaned = re.sub(r"\(\s*\)", " ", cleaned)
     cleaned = re.sub(r"\[\s*\]", " ", cleaned)
     cleaned = re.sub(r'"\s*"', " ", cleaned)
     cleaned = re.sub(r"'\s*'", " ", cleaned)
     cleaned = re.sub(r"\s+([,;:.])", r"\1", cleaned)
     cleaned = re.sub(r"[=:#]\s+", " ", cleaned)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    for word in HALLUCINATED_LOCATIONS:
-        cleaned = re.sub(rf"\b{re.escape(word)}\b", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.;:-#=")
     return cleaned
 
@@ -167,18 +147,32 @@ def _enrich_from_yolo(event: Dict[str, Any]) -> str:
 
 
 def sanitize_event(event: Dict[str, Any]) -> Dict[str, Any]:
-    """Return a shallow copy of `event` with description/summary sanitized."""
+    """Return a shallow copy of `event` with description/summary/scene sanitized."""
     safe = dict(event)
     desc = sanitize_field(event.get("suspect_description", ""))
     if desc.strip().lower() in GENERIC_DESCRIPTIONS:
-        # Fall back to a description grounded in what YOLO actually saw.
         enriched = _enrich_from_yolo(event)
         desc = enriched or desc or "an unknown person"
     safe["suspect_description"] = desc or "an unknown person"
     safe["one_line_summary"] = (
-        sanitize_field(event.get("one_line_summary", "")) or "an event was detected at your home"
+        sanitize_field(event.get("one_line_summary", ""))
+        or "an event was detected at the camera view"
     )
+    safe["scene"] = _normalize_scene(event.get("scene"))
     return safe
+
+
+def _normalize_scene(value: Any) -> str:
+    """Trim/clean the scene string and ensure it starts with an article."""
+    if not isinstance(value, str):
+        return DEFAULT_SCENE
+    cleaned = sanitize_field(value)
+    if not cleaned:
+        return DEFAULT_SCENE
+    cleaned_lower = cleaned.lower()
+    if cleaned_lower.startswith(("the ", "a ", "an ")):
+        return cleaned
+    return f"the {cleaned}"
 
 
 def _coerce_tier(value: Any) -> int:
@@ -209,16 +203,19 @@ def static_template(event: Dict[str, Any]) -> str:
     summary = _ensure_period(_capitalize(_normalize_phrase(safe["one_line_summary"])))
     elapsed = _humanize_elapsed(safe.get("time_elapsed", "just now"))
     pattern = safe.get("behavior_pattern", "other_benign")
-    action_phrase = _phrase_for_pattern(pattern, _normalize_phrase(safe["one_line_summary"]))
+    scene = safe.get("scene", DEFAULT_SCENE)
+    action_phrase = _phrase_for_pattern(
+        pattern, _normalize_phrase(safe["one_line_summary"]), scene
+    )
     if tier == 4:
         return _clamp(
-            "This is your SafeWatch agent. There is an emergency at your home. "
+            f"This is your SafeWatch agent. There is an emergency at {scene}. "
             f"{summary} "
             "Emergency services have been requested. Stay on the line."
         )
     if tier == 3:
         return _clamp(
-            f"This is your SafeWatch agent. A suspicious event was detected at your home {elapsed}. "
+            f"This is your SafeWatch agent. A suspicious event was detected at {scene} {elapsed}. "
             f"{_capitalize(desc)} {action_phrase} "
             "I have sent the clip to your phone. "
             "Press 1 to notify your neighbors, or 2 to ignore."
@@ -243,25 +240,26 @@ def _humanize_elapsed(text: str) -> str:
     return text
 
 
-# Map structured behavior_pattern to natural phrasing the homeowner will hear.
+# Behavior phrasing without scene — the opening sentence already states where.
+# Keeps the call from feeling repetitive ("at the library ... at the library").
 _PATTERN_PHRASES = {
-    "taking_item": "appears to be taking an item from your property.",
+    "taking_item": "appears to be taking an item.",
     "opening_container": "appears to be opening a package or container.",
     "fleeing": "is running away with an item.",
-    "loitering": "is loitering near the entrance.",
-    "leaving_item": "left an unattended item near the entrance.",
-    "collapsed": "appears to have collapsed near the entrance.",
+    "loitering": "is loitering in the area.",
+    "leaving_item": "left an unattended item.",
+    "collapsed": "appears to have collapsed.",
     "violence": "is involved in a physical altercation.",
-    "walking_through": "appears to be passing by.",
-    "other_benign": "was seen near your property.",
+    "walking_through": "appears to be passing through.",
+    "other_benign": "was seen in the area.",
 }
 
 
-def _phrase_for_pattern(pattern: str, summary: str) -> str:
+def _phrase_for_pattern(pattern: str, summary: str, scene: str) -> str:
     """Return a polished sentence describing the action.
 
-    If we have a known pattern, prefer the canonical phrase. Otherwise fall
-    back to the model's `one_line_summary`, ensuring it ends with a period.
+    The scene is already mentioned in the opening of the script, so we keep
+    pattern phrases scene-free to avoid repetition.
     """
     canon = _PATTERN_PHRASES.get(pattern)
     if canon:

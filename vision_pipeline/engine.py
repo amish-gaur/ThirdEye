@@ -760,13 +760,13 @@ class VisionEngine:
     ) -> tuple[dict[str, Any] | None, str]:
         if self.config.mock_classifier:
             # Make mock output OBVIOUSLY mock so you can't confuse it for a real
-            # Qwen description in a demo. Real Qwen will produce specific
-            # clothing colors; mock will say "MOCK MODE" loudly.
+            # Qwen description in a demo.
             raw_answer = json.dumps(
                 {
                     "tier": 3,
                     "behavior_pattern": "taking_item",
                     "confidence": 0.80,
+                    "scene": "the mock test scene",
                     "suspect_description": "MOCK MODE test person of unspecified appearance",
                     "one_line_summary": "MOCK MODE: vision pipeline is in mock mode and not using Qwen",
                     "time_elapsed": "ignored",

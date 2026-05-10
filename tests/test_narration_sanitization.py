@@ -14,28 +14,40 @@ def test_sanitize_field_strips_markdown_and_whitespace() -> None:
     assert sanitize_field("  **person** in   red `hoodie`  ") == "person in red hoodie"
 
 
-def test_sanitize_field_drops_hallucinated_locations() -> None:
+def test_sanitize_field_keeps_location_words() -> None:
+    """Location words like 'library' are now kept — Qwen describes the real scene."""
     cleaned = sanitize_field("person carrying a bag in the library")
-    assert "library" not in cleaned.lower()
+    assert "library" in cleaned.lower()
     assert "person carrying a bag" in cleaned
 
 
 def test_sanitize_event_provides_safe_defaults() -> None:
     out = sanitize_event({"tier": 3, "suspect_description": "", "one_line_summary": ""})
     assert out["suspect_description"] == "an unknown person"
-    assert out["one_line_summary"] == "an event was detected at your home"
+    assert out["one_line_summary"] == "an event was detected at the camera view"
+    # No scene supplied -> defaults to the camera view.
+    assert out["scene"] == "the camera view"
 
 
-def test_static_template_strips_hallucinated_location() -> None:
+def test_static_template_uses_scene_from_event() -> None:
+    """Library demo: scene='the library entrance' should appear in the call."""
     event = sample_event(
         tier=3,
-        description="person reading in the library",
-        summary="person browsing books in classroom",
+        description="tall person in a black shirt",
+        summary="person reached toward an item on the table",
+        scene="the library entrance",
     )
     text = static_template(event)
-    lowered = text.lower()
-    assert "library" not in lowered
-    assert "classroom" not in lowered
+    assert "library entrance" in text.lower()
+    assert "Press 1" in text
+
+
+def test_static_template_falls_back_to_default_scene() -> None:
+    """No scene field -> 'the camera view' instead of a hardcoded location."""
+    event = sample_event(tier=3)
+    event.pop("scene", None)
+    text = static_template(event)
+    assert "the camera view" in text.lower()
     assert "Press 1" in text
 
 
@@ -47,9 +59,15 @@ def test_static_template_clamps_long_text() -> None:
 
 
 def test_generate_script_uses_sanitized_static_when_claude_disabled(dry_config) -> None:
-    event = sample_event(tier=3, description="person in classroom", summary="took a bag")
+    """Static fallback works for indoor scenes too (no more rejection)."""
+    event = sample_event(
+        tier=3,
+        description="tall man in dark coat",
+        summary="person took a bag from the table",
+        scene="the office hallway",
+    )
     script = generate_script(event, config=dry_config)
-    assert "classroom" not in script.lower()
+    assert "office hallway" in script.lower()
     assert "Press 1" in script
 
 

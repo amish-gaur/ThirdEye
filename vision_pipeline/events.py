@@ -26,9 +26,10 @@ from typing import Any
 # Prompt sent to the VLM (Qwen / Moondream). Tight, explicit, JSON-only.
 # ---------------------------------------------------------------------------
 
-VISION_LANGUAGE_PROMPT = """You are SafeWatch, a calm, factual outdoor home security classifier.
-You are looking at a SINGLE FRAME from an outdoor camera. Describe ONLY what you
-can clearly see. NEVER guess, NEVER assume, NEVER invent details.
+VISION_LANGUAGE_PROMPT = """You are SafeWatch, a calm, factual security classifier.
+You are looking at a SINGLE FRAME from a camera (could be a home porch, an
+office hallway, a library, a parking lot, etc.). Describe ONLY what you can
+clearly see. NEVER guess, NEVER assume, NEVER invent details.
 
 Pick ONE behavior_pattern that best matches what the person is doing IN THIS FRAME:
   walking_through   - just passing by, no interaction with property
@@ -61,21 +62,26 @@ DESCRIPTION HONESTY (CRITICAL):
 - If the frame is too blurry, dark, or partial to see clothing clearly, return
   "person of unclear appearance" and confidence <= 0.3.
 
+SCENE GROUNDING:
+- Describe the LOCATION you actually see in the "scene" field. Examples:
+  "library aisle", "office hallway", "front porch", "parking lot", "stairwell",
+  "kitchen counter", "outdoor entryway". Use whatever you can see.
+- If the location is ambiguous, use "the area in view" or "the camera view".
+- DO NOT make up "porch" or "home" if that is not what you see.
+
 OUTPUT RULES (strict):
 - Reply with ONE JSON object and NOTHING else. No prose, no markdown, no fences.
 - Keys (all required):
     "tier"               : integer in {1,2,3,4}
     "behavior_pattern"   : one of the strings listed above
     "confidence"         : float in [0.0, 1.0]
+    "scene"              : 2-8 words describing the visible location/setting.
     "suspect_description": 6-18 words. ONLY visible clothing/build/color.
         NEVER include numbers, IDs, confidence scores, bounding-box coords,
         model names, or phrases like "person 0", "person 0.08", "id 3", "track_2".
     "one_line_summary"   : 8-20 words about the BEHAVIOR you actually saw in
         this frame. Reference the behavior_pattern naturally.
     "time_elapsed"       : short string (will be overwritten by the pipeline).
-
-DO NOT name indoor places (library, classroom, office, kitchen, bedroom, store,
-restaurant, mall, school, hospital, church). This is an OUTDOOR home camera.
 
 If unsure, return tier 1 with behavior_pattern "other_benign" and confidence
 <= 0.3. Honest "I don't know" beats a wrong guess.
@@ -90,6 +96,12 @@ REQUIRED_CLASSIFIER_KEYS = {
     "one_line_summary",
     "time_elapsed",
 }
+
+# scene is OPTIONAL — if absent the validator fills in "the camera view" so the
+# narration always has something concrete to say.
+OPTIONAL_CLASSIFIER_KEYS = {"scene", "behavior_pattern"}
+
+DEFAULT_SCENE = "the camera view"
 
 # behavior_pattern values mapped to the maximum tier they may carry.
 # A pattern observed at a HIGHER tier than allowed is clamped down — this is the
@@ -143,33 +155,11 @@ DESCRIPTOR_HINT_WORDS = (
     "boy", "boys", "girl", "girls", "person", "people",
 )
 
-# Words/phrases that indicate the VLM is hallucinating an indoor scene/context
-# the home camera cannot actually see. These cause REJECT (or DEGRADE to tier 1).
-HALLUCINATED_LOCATIONS = (
-    "library",
-    "classroom",
-    "school",
-    "office",
-    "kitchen",
-    "bedroom",
-    "bathroom",
-    "living room",
-    "store",
-    "supermarket",
-    "mall",
-    "restaurant",
-    "cafeteria",
-    "hospital",
-    "church",
-    "temple",
-    "mosque",
-    "stadium",
-    "gym",
-    "factory",
-    "warehouse",
-    "subway",
-    "airport",
-)
+# Kept for backwards compatibility with downstream sanitizers but no longer
+# used as a rejection list. The system now describes whatever scene Qwen
+# actually sees (porch, library, parking lot, etc.) instead of forcing an
+# outdoor-home assumption that broke demos in indoor venues.
+HALLUCINATED_LOCATIONS: tuple[str, ...] = ()
 
 # Soft signals — descriptions like these are uselessly vague; we keep them but
 # tag them so callers can choose to suppress the alert or relabel it tier 1.
@@ -223,12 +213,6 @@ def evaluate_classifier_output(
     if payload is None:
         return ClassificationResult(
             "reject", None, "missing required keys / invalid types"
-        )
-
-    bad_word = _contains_hallucinated_location(payload)
-    if bad_word:
-        return ClassificationResult(
-            "reject", None, f"hallucinated indoor location: {bad_word!r}"
         )
 
     if _is_low_value(payload):
@@ -288,6 +272,7 @@ def build_event(
         "tier_name": TIER_LABELS.get(tier, "UNKNOWN"),
         "confidence": float(classification["confidence"]),
         "behavior_pattern": classification.get("behavior_pattern", "other_benign"),
+        "scene": classification.get("scene", DEFAULT_SCENE),
         "suspect_description": classification["suspect_description"],
         "one_line_summary": classification["one_line_summary"],
         "time_elapsed": classification["time_elapsed"],
@@ -403,6 +388,10 @@ def _normalize_classifier_payload(
         payload["suspect_description"] = payload["description"]
     if "pattern" in payload and "behavior_pattern" not in payload:
         payload["behavior_pattern"] = payload["pattern"]
+    if "location" in payload and "scene" not in payload:
+        payload["scene"] = payload["location"]
+    if "setting" in payload and "scene" not in payload:
+        payload["scene"] = payload["setting"]
     payload.setdefault("time_elapsed", "ignored")
     payload.setdefault("behavior_pattern", "other_benign")
 
@@ -432,15 +421,31 @@ def _normalize_classifier_payload(
         return None
 
     behavior_pattern = _coerce_behavior_pattern(payload.get("behavior_pattern"))
+    scene = _coerce_scene(payload.get("scene"))
 
     return {
         "tier": tier,
         "confidence": confidence,
+        "scene": scene,
         "suspect_description": desc,
         "one_line_summary": summary,
         "time_elapsed": f"{time_elapsed_seconds:.2f}s",
         "behavior_pattern": behavior_pattern,
     }
+
+
+def _coerce_scene(value: Any) -> str:
+    """Normalize the optional `scene` field to a short, clean phrase."""
+    if not isinstance(value, str):
+        return DEFAULT_SCENE
+    cleaned = _scrub_numeric_artifacts(value).strip()
+    cleaned = re.sub(r"^(?:the\s+)?", "", cleaned, flags=re.IGNORECASE).strip()
+    if not cleaned:
+        return DEFAULT_SCENE
+    cleaned = _trim_words(cleaned, 8).strip(" ,.;:-")
+    if not cleaned:
+        return DEFAULT_SCENE
+    return f"the {cleaned}" if not cleaned.startswith(("a ", "an ", "the ")) else cleaned
 
 
 def _coerce_behavior_pattern(value: Any) -> str:
@@ -524,15 +529,6 @@ def _has_visual_descriptor(text: str) -> bool:
         return False
     blob = text.lower()
     return any(re.search(rf"\b{re.escape(word)}\b", blob) for word in DESCRIPTOR_HINT_WORDS)
-
-
-def _contains_hallucinated_location(payload: dict[str, Any]) -> str | None:
-    for field in ("suspect_description", "one_line_summary"):
-        text = payload.get(field, "").lower()
-        for word in HALLUCINATED_LOCATIONS:
-            if re.search(rf"\b{re.escape(word)}\b", text):
-                return word
-    return None
 
 
 def _is_low_value(payload: dict[str, Any]) -> bool:

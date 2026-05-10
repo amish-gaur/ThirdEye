@@ -29,6 +29,7 @@ def sample_event(
     summary: str | None = None,
     confidence: float = 0.82,
     behavior_pattern: str | None = None,
+    scene: str = "the front porch",
 ) -> Dict[str, Any]:
     summary = summary or DEFAULT_SUMMARIES.get(tier, "Activity at your home.")
     pattern = behavior_pattern or DEFAULT_BEHAVIOR_PATTERNS.get(tier, "other_benign")
@@ -39,6 +40,7 @@ def sample_event(
         "tier_name": TIER_LABELS.get(tier, "UNKNOWN"),
         "confidence": confidence,
         "behavior_pattern": pattern,
+        "scene": scene,
         "suspect_description": description,
         "one_line_summary": summary,
         "time_elapsed": "just now",

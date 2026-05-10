@@ -37,6 +37,11 @@ def main() -> None:
         default=0.85,
         help="Qwen confidence in [0,1]. Below alert floor (0.55) downgrades the call.",
     )
+    parser.add_argument(
+        "--scene",
+        default="the front porch",
+        help="Visible location ('the library entrance', 'the parking lot', etc.)",
+    )
     args = parser.parse_args()
 
     event = sample_event(
@@ -45,6 +50,7 @@ def main() -> None:
         summary=args.summary,
         confidence=args.confidence,
         behavior_pattern=args.behavior,
+        scene=args.scene,
     )
     print(f"POST {args.url}\n{json.dumps(event, indent=2)}\n")
     resp = requests.post(args.url, json=event, timeout=15)

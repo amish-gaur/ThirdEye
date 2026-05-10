@@ -95,27 +95,33 @@ def test_rejects_invalid_tier() -> None:
     assert result.status == "reject"
 
 
-def test_rejects_when_description_mentions_indoor_location() -> None:
+def test_indoor_descriptions_are_now_accepted_with_scene() -> None:
+    """Indoor scenes are valid (library, office, parking lot) — Qwen describes
+    the actual location now instead of being forced to assume an outdoor home."""
     raw = (
-        '{"tier": 3, "confidence": 0.8, '
-        '"suspect_description": "person reading in the library", '
-        '"one_line_summary": "person inside library aisle", '
+        '{"tier": 3, "behavior_pattern": "taking_item", "confidence": 0.8, '
+        '"scene": "the library aisle", '
+        '"suspect_description": "tall man in a black shirt and gray jeans", '
+        '"one_line_summary": "person reached for a backpack on the table", '
         '"time_elapsed": "x"}'
     )
     result = evaluate_classifier_output(raw, 1.0)
-    assert result.status == "reject"
-    assert "library" in result.reason
+    assert result.status == "accept", result.reason
+    assert result.payload["scene"] == "the library aisle"
 
 
-def test_rejects_when_summary_mentions_indoor_location() -> None:
+def test_office_scene_is_accepted() -> None:
     raw = (
-        '{"tier": 3, "confidence": 0.8, '
-        '"suspect_description": "person carrying bag", '
-        '"one_line_summary": "person walks through office", '
+        '{"tier": 3, "behavior_pattern": "taking_item", "confidence": 0.8, '
+        '"scene": "office hallway", '
+        '"suspect_description": "person in dark coat with backpack", '
+        '"one_line_summary": "person picked up an item from the floor", '
         '"time_elapsed": "x"}'
     )
     result = evaluate_classifier_output(raw, 1.0)
-    assert result.status == "reject"
+    assert result.status == "accept"
+    # Auto-prepends "the" if missing.
+    assert result.payload["scene"] == "the office hallway"
 
 
 def test_low_value_output_is_degraded_to_tier_one() -> None:
@@ -148,9 +154,35 @@ def test_parse_classifier_output_returns_none_for_reject() -> None:
 
 
 def test_constants_are_exported() -> None:
-    # Helps ensure we don't accidentally drop the safety lists during refactors.
-    assert "library" in HALLUCINATED_LOCATIONS
+    # HALLUCINATED_LOCATIONS is intentionally empty now — we accept indoor scenes.
+    assert HALLUCINATED_LOCATIONS == ()
     assert "no event" in LOW_VALUE_PHRASES
+
+
+def test_scene_field_default_is_camera_view() -> None:
+    """If Qwen omits scene, default to 'the camera view' instead of crashing."""
+    raw = (
+        '{"tier": 3, "behavior_pattern": "taking_item", "confidence": 0.8, '
+        '"suspect_description": "tall man in a black shirt", '
+        '"one_line_summary": "person reached for an item", '
+        '"time_elapsed": "x"}'
+    )
+    result = evaluate_classifier_output(raw, 1.0)
+    assert result.status == "accept"
+    assert result.payload["scene"] == "the camera view"
+
+
+def test_scene_alias_keys_normalized() -> None:
+    """Accept 'location' or 'setting' as aliases for 'scene'."""
+    raw_location = (
+        '{"tier": 3, "behavior_pattern": "taking_item", "confidence": 0.8, '
+        '"location": "parking lot", '
+        '"suspect_description": "tall man in a dark coat", '
+        '"one_line_summary": "person grabbed an item from a vehicle", '
+        '"time_elapsed": "x"}'
+    )
+    result = evaluate_classifier_output(raw_location, 1.0)
+    assert result.payload["scene"] == "the parking lot"
 
 
 # ---------------------------------------------------------------------------
