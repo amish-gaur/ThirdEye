@@ -4,7 +4,8 @@
 
     1 AMBIENT   - log only
     2 NOTICE    - send SMS to homeowner
-    3 ALERT     - Claude→ElevenLabs→Twilio Play call to homeowner
+    3 ALERT     - parallel: Claude→ElevenLabs→Twilio Play call to homeowner
+                  + SMS to homeowner (and family if FAMILY_PHONE is set)
     4 EMERGENCY - parallel Twilio Play calls to dispatch + homeowner + family
 
 Person 2 hardening:
@@ -288,9 +289,42 @@ def _tier_alert(event: Dict[str, Any], cfg: Config, result: ActionResult) -> Act
     script = generate_script(event, cfg)
     result.script = script
     media_url = _try_synthesize(script, cfg, result, prefix="alert_")
-    call = _call(cfg.homeowner_phone, script, media_url, cfg, result)
-    if call:
-        result.actions.append("call_homeowner")
+    sms_body = _format_alert_sms_body(event)
+
+    sms_targets = [("homeowner", cfg.homeowner_phone)]
+    if cfg.family_phone:
+        sms_targets.append(("family", cfg.family_phone))
+
+    tasks: List[tuple[str, str, Any]] = [
+        ("call_homeowner", cfg.homeowner_phone, ("call", script, media_url)),
+    ]
+    for label, num in sms_targets:
+        tasks.append((f"sms_{label}", num, ("sms", sms_body, None)))
+
+    with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+        futures = {}
+        for action_label, to, payload in tasks:
+            kind, body, url = payload
+            if kind == "call":
+                fut = pool.submit(_place_call_safe, to, body, url, cfg)
+            else:
+                fut = pool.submit(_send_sms_safe, to, body, cfg)
+            futures[fut] = (action_label, kind)
+
+        for fut in as_completed(futures):
+            action_label, kind = futures[fut]
+            try:
+                outcome = fut.result()
+                if outcome is None:
+                    continue
+                if kind == "call":
+                    result.calls.append(outcome)
+                else:
+                    result.messages.append(outcome)
+                result.actions.append(action_label)
+            except Exception as exc:
+                log.exception("Tier 3 %s failed", action_label)
+                result.errors.append(f"{action_label}: {exc}")
     return result
 
 
@@ -396,6 +430,29 @@ def _format_sms_body(event: Dict[str, Any]) -> str:
     if desc:
         return f"SafeWatch: {summary} ({desc}) — {elapsed}. No action needed."
     return f"SafeWatch: {summary} — {elapsed}. No action needed."
+
+
+def _format_alert_sms_body(event: Dict[str, Any]) -> str:
+    summary = event.get("one_line_summary", "Possible theft at your home.")
+    desc = event.get("suspect_description", "")
+    elapsed = event.get("time_elapsed", "just now")
+    if desc:
+        return (
+            f"SafeWatch ALERT: {summary} ({desc}) — {elapsed}. "
+            "Active alert; we are calling you now."
+        )
+    return (
+        f"SafeWatch ALERT: {summary} — {elapsed}. "
+        "Active alert; we are calling you now."
+    )
+
+
+def _send_sms_safe(to: str, body: str, cfg: Config) -> Optional[SmsResult]:
+    try:
+        return send_sms(to, body, config=cfg)
+    except Exception:
+        log.exception("SMS to %s failed", to)
+        raise
 
 
 def _coerce_tier(value: Any) -> int:
