@@ -20,8 +20,22 @@
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_safewatch._tcp</string>
+		<string>_http._tcp</string>
+	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>Used for the live camera feed.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Reaches the local SafeWatch action_router and LAN cameras.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Used during active incident calls.</string>
 	<key>UILaunchScreen</key>

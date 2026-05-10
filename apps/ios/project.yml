@@ -45,3 +45,10 @@ targets:
         CFBundleDisplayName: "ThirdEye"
         NSCameraUsageDescription: "Used for the live camera feed."
         NSMicrophoneUsageDescription: "Used during active incident calls."
+        NSLocalNetworkUsageDescription: "Reaches the local SafeWatch action_router and LAN cameras."
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: YES
+          NSAllowsArbitraryLoads: YES
+        NSBonjourServices:
+          - "_safewatch._tcp"
+          - "_http._tcp"
