@@ -259,6 +259,7 @@ let ws = null;
 let facing = "environment";
 let sending = false;
 let framesSent = 0;
+let encodeInFlight = false;
 let lastFpsAt = performance.now();
 let lastFpsCount = 0;
 
@@ -335,6 +336,10 @@ flipBtn.onclick = async () => {{
 
 function loop() {{
   if (!stream) return;
+  if (encodeInFlight || (ws && ws.bufferedAmount > 1_000_000)) {{
+    setTimeout(loop, 1000 / FPS);
+    return;
+  }}
   const w = video.videoWidth || 640;
   const h = video.videoHeight || 480;
   if (w && h) {{
@@ -345,13 +350,18 @@ function loop() {{
       canvas.width = cw; canvas.height = ch;
     }}
     ctx.drawImage(video, 0, 0, cw, ch);
+    encodeInFlight = true;
     canvas.toBlob(async (blob) => {{
-      if (!blob || !sending || !ws || ws.readyState !== 1) return;
       try {{
+        if (!blob || !sending || !ws || ws.readyState !== 1 || ws.bufferedAmount > 1_000_000) return;
         const buf = await blob.arrayBuffer();
+        if (!sending || !ws || ws.readyState !== 1 || ws.bufferedAmount > 1_000_000) return;
         ws.send(buf);
         framesSent++;
       }} catch (e) {{}}
+      finally {{
+        encodeInFlight = false;
+      }}
     }}, "image/jpeg", QUALITY);
   }}
   // FPS meter

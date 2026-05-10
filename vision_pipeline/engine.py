@@ -31,16 +31,26 @@ from PIL import Image
 from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
 from ultralytics import YOLO
 
-from .clip_writer import write_clip
+try:  # YOLO-World is present in recent Ultralytics builds.
+    from ultralytics import YOLOWorld
+except ImportError:  # pragma: no cover - depends on the installed ultralytics version
+    YOLOWorld = None
+
 from .config import CONFIG, Config
 from .events import VISION_LANGUAGE_PROMPT, build_event, evaluate_classifier_output
-from .face_filter import FaceFilter, InsightFaceEmbedder, PersonVerdict
-from .track_identity import TrackIdentityResolver, TrackVerdict
-from .publisher import post_event, post_ready_signal
+from .publisher import post_event
+from .theft_tracker import (
+    PackageDetection,
+    PackageTheftTracker,
+    STATE_IDLE as THEFT_STATE_IDLE,
+    TheftDecision,
+)
 
 FRAME_BUFFER_MAXLEN = 150
 TARGET_FPS = 10
 FRAME_INTERVAL_SECONDS = 1.0 / TARGET_FPS
+DISPLAY_FPS = 30
+DISPLAY_INTERVAL_SECONDS = 1.0 / DISPLAY_FPS
 PERSON_CLASS_ID = 0
 BOX_CLASS_IDS = (24, 26, 28)  # backpack, handbag, suitcase
 TRIGGER_CLASS_IDS = (PERSON_CLASS_ID,) + BOX_CLASS_IDS
@@ -87,15 +97,22 @@ class ClassificationRequest:
 
 
 @dataclass
+class ArtifactRequest:
+    kind: str
+    timestamp: float
+    frame_seq: int
+    frame_bgr: Any
+    decision: "BehaviorDecision"
+    persons: list["Detection"]
+    carryables: list["Detection"]
+
+
+@dataclass
 class Detection:
     cls_id: int
     label: str
     confidence: float
     box: tuple[float, float, float, float]  # x1, y1, x2, y2 in pixels
-    # ByteTrack-assigned track id when the detection comes through `yolo.track()`.
-    # None for the first frames before the tracker confirms a track, or when
-    # callers go through the legacy `yolo.predict()` path.
-    track_id: int | None = None
 
 
 @dataclass
@@ -136,6 +153,8 @@ class BehaviorDecision:
     candidate: CandidateContext | None
     person_boxes: list[Detection]
     carryable_boxes: list[Detection]
+    package_anchor_label: str | None = None
+    package_anchor_box: tuple[float, float, float, float] | None = None
     near_miss: bool = False  # for failure-artifact saving
 
 
@@ -180,10 +199,16 @@ def frame_to_pil(frame_bgr: Any) -> Image.Image:
 
 
 def parse_capture_source(raw_source: str) -> int | str:
-    raw_source = raw_source.strip()
-    if raw_source.isdigit():
-        return int(raw_source)
-    return raw_source
+    """Resolve a CAMERA_SOURCE string into a `cv2.VideoCapture` argument.
+
+    Delegates to `vision_pipeline.source_resolver` so the same logic can be
+    unit-tested without touching any heavy imports. Supports the new
+    `phone://` shortcuts (paired phone camera streamed via the action
+    router's MJPEG endpoint) on top of the existing OpenCV inputs.
+    """
+    from .source_resolver import resolve_camera_source
+
+    return resolve_camera_source(raw_source)
 
 
 def _box_center(box: tuple[float, float, float, float]) -> tuple[float, float]:
@@ -599,6 +624,8 @@ _TIER_COLORS = {
     3: (0, 140, 255),    # orange
     4: (0, 0, 255),      # red
 }
+_CARRYABLE_BOX_COLOR = (255, 80, 220)
+_CARDBOARD_BOX_COLOR = (255, 0, 255)
 
 
 def _draw_overlay(
@@ -609,54 +636,32 @@ def _draw_overlay(
     last_classification: "LastClassification | None" = None,
 ) -> None:
     h, w = frame_bgr.shape[:2]
-    zone = config.entry_zone
-    x1, y1, x2, y2 = (
-        int(zone[0] * w),
-        int(zone[1] * h),
-        int(zone[2] * w),
-        int(zone[3] * h),
-    )
-    cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), (0, 200, 255), 2)
-    cv2.putText(frame_bgr, "ENTRY ZONE", (x1 + 4, y1 + 18),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1, cv2.LINE_AA)
-
     candidate = decision.candidate
     cand_person_box = candidate.last_person_box if candidate else None
     cand_carryable_box = candidate.last_carryable_box if candidate else None
 
+    def _rect(box, color, thickness):
+        x1, y1, x2, y2 = (int(round(v)) for v in box)
+        x1 = min(max(0, x1), max(0, w - 1))
+        x2 = min(max(0, x2), max(0, w - 1))
+        y1 = min(max(0, y1), max(0, h - 1))
+        y2 = min(max(0, y2), max(0, h - 1))
+        if x2 <= x1 or y2 <= y1:
+            return
+        cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), color, thickness)
+
     for det in decision.person_boxes:
         is_candidate = cand_person_box is not None and _box_iou(det.box, cand_person_box) > 0.3
-        thickness = 3 if is_candidate else 2
-        _draw_box(frame_bgr, det, color=(0, 255, 0), thickness=thickness)
+        _rect(det.box, (0, 255, 0), 3 if is_candidate else 2)
 
     for det in decision.carryable_boxes:
         is_candidate = cand_carryable_box is not None and _box_iou(det.box, cand_carryable_box) > 0.3
-        thickness = 3 if is_candidate else 2
-        _draw_box(frame_bgr, det, color=(255, 80, 220), thickness=thickness)
-
-    # Top-left status text
-    lines = [
-        f"state: {decision.state}",
-        f"cues : {', '.join(decision.cues) if decision.cues else '-'}",
-        f"suppress: {'ON' if decision.suppression_active else 'off'}"
-        + (f"  demo_bias=ON" if config.demo_mode_theft_bias else ""),
-        f"last_emit: {('%.1fs ago' % (time.time() - decision.last_emitted_at)) if decision.last_emitted_at else 'never'}",
-    ]
-    if candidate is not None:
-        lines.append(
-            f"cand: frames={candidate.interaction_frames} dwell={candidate.recent_zone_dwell:.2f}s carry={candidate.last_carryable_label}"
+        color = (
+            _CARDBOARD_BOX_COLOR
+            if det.label.strip().lower() == "cardboard box"
+            else _CARRYABLE_BOX_COLOR
         )
-    y = 22
-    for line in lines:
-        cv2.putText(frame_bgr, line, (10, y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3, cv2.LINE_AA)
-        cv2.putText(frame_bgr, line, (10, y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (240, 240, 240), 1, cv2.LINE_AA)
-        y += 22
-
-    # Bottom panel: live Qwen description so you SEE what the model thinks of you.
-    if last_classification is not None and last_classification.is_set:
-        _draw_qwen_panel(frame_bgr, last_classification)
+        _rect(det.box, color, 3 if is_candidate else 2)
 
 
 def _draw_qwen_panel(frame_bgr: Any, cls: "LastClassification") -> None:
@@ -708,14 +713,100 @@ def _truncate_for_overlay(text: str, max_chars: int) -> str:
     return text[: max(0, max_chars - 1)] + "\u2026"
 
 
+# ANSI helpers — milestone events render as styled banners in the terminal.
+_PRETTY_RESET = "\033[0m"
+_PRETTY_BOLD = "\033[1m"
+_PRETTY_DIM = "\033[2m"
+_PRETTY_RED = "\033[91m"
+_PRETTY_GREEN = "\033[92m"
+_PRETTY_YELLOW = "\033[93m"
+_PRETTY_CYAN = "\033[96m"
+
+_PRETTY_TIER = {
+    1: (_PRETTY_DIM, "AMBIENT"),
+    2: (_PRETTY_CYAN, "NOTICE"),
+    3: (_PRETTY_YELLOW, "ALERT"),
+    4: (_PRETTY_RED, "EMERGENCY"),
+}
+
+_PRETTY_BAR = "━" * 60
+
+
+def _print_pretty_event(event: dict[str, Any]) -> None:
+    tier = int(event.get("tier", 1))
+    color, name = _PRETTY_TIER.get(tier, (_PRETTY_RESET, "UNKNOWN"))
+    pattern = event.get("behavior_pattern") or "-"
+    confidence = float(event.get("confidence") or 0.0)
+    summary = event.get("one_line_summary") or "-"
+    desc = event.get("suspect_description") or "-"
+    scene = event.get("scene") or "-"
+    print()
+    print(f"{color}{_PRETTY_BOLD}{_PRETTY_BAR}{_PRETTY_RESET}")
+    print(
+        f"{color}{_PRETTY_BOLD}  ▶ QWEN  T{tier} {name}{_PRETTY_RESET}"
+        f"  conf {confidence:.2f}  pattern {pattern}"
+    )
+    print(f"  {_PRETTY_DIM}scene{_PRETTY_RESET}  {scene}")
+    print(f"  {_PRETTY_DIM}desc {_PRETTY_RESET}  {desc}")
+    print(f"  {_PRETTY_DIM}what {_PRETTY_RESET}  {summary}")
+    print(f"{color}{_PRETTY_BOLD}{_PRETTY_BAR}{_PRETTY_RESET}")
+
+
+def _print_pretty_theft(state: str, package: str | None, cues: list[str]) -> None:
+    pkg = package or "?"
+    cue_str = ", ".join(cues) if cues else "-"
+    print()
+    print(f"{_PRETTY_RED}{_PRETTY_BOLD}{_PRETTY_BAR}{_PRETTY_RESET}")
+    print(f"{_PRETTY_RED}{_PRETTY_BOLD}  ▶ THEFT CONFIRMED  package={pkg}{_PRETTY_RESET}")
+    print(f"  {_PRETTY_DIM}cues{_PRETTY_RESET}   {cue_str}")
+    print(f"{_PRETTY_RED}{_PRETTY_BOLD}{_PRETTY_BAR}{_PRETTY_RESET}")
+
+
+def _print_pretty_call(to: str, sid: str) -> None:
+    print(f"{_PRETTY_GREEN}{_PRETTY_BOLD}  ✓ CALL PLACED{_PRETTY_RESET}  to={to}  sid={sid}")
+
+
 def _draw_box(frame_bgr: Any, det: Detection, *, color: tuple[int, int, int], thickness: int) -> None:
-    x1, y1, x2, y2 = (int(v) for v in det.box)
+    h, w = frame_bgr.shape[:2]
+    x1, y1, x2, y2 = (int(round(v)) for v in det.box)
+    x1 = min(max(0, x1), max(0, w - 1))
+    x2 = min(max(0, x2), max(0, w - 1))
+    y1 = min(max(0, y1), max(0, h - 1))
+    y2 = min(max(0, y2), max(0, h - 1))
+    if x2 <= x1 or y2 <= y1:
+        return
     cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), color, thickness)
     label = f"{det.label} {det.confidence:.2f}"
     (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-    cv2.rectangle(frame_bgr, (x1, y1 - th - 6), (x1 + tw + 6, y1), color, -1)
-    cv2.putText(frame_bgr, label, (x1 + 3, y1 - 4),
+    label_w = min(tw + 6, w)
+    label_x1 = min(max(0, x1), max(0, w - label_w))
+    label_y2 = y1
+    label_y1 = y1 - th - 6
+    if label_y1 < 0:
+        label_y1 = y1
+        label_y2 = min(h - 1, y1 + th + 6)
+        text_y = min(h - 4, y1 + th + 2)
+    else:
+        text_y = y1 - 4
+    cv2.rectangle(frame_bgr, (label_x1, label_y1), (label_x1 + label_w, label_y2), color, -1)
+    cv2.putText(frame_bgr, label, (label_x1 + 3, text_y),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
+
+
+def _empty_decision() -> BehaviorDecision:
+    return BehaviorDecision(
+        state=STATE_IDLE,
+        cues=[],
+        should_classify=False,
+        suppression_active=False,
+        last_emitted_at=0.0,
+        candidate=None,
+        person_boxes=[],
+        carryable_boxes=[],
+        package_anchor_label=None,
+        package_anchor_box=None,
+        near_miss=False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -734,10 +825,29 @@ class VisionEngine:
         self.classification_queue: queue.Queue[ClassificationRequest | None] = queue.Queue(
             maxsize=1
         )
+        self.publish_queue: queue.Queue[dict[str, Any] | None] = queue.Queue(
+            maxsize=max(1, int(config.event_queue_size))
+        )
+        self.artifact_queue: queue.Queue[ArtifactRequest | None] = queue.Queue(
+            maxsize=max(1, int(config.artifact_queue_size))
+        )
         self.classification_in_flight = False
         self.state_lock = threading.Lock()
         self.worker_thread: threading.Thread | None = None
+        self.publisher_thread: threading.Thread | None = None
+        self.artifact_thread: threading.Thread | None = None
+        self.capture_thread: threading.Thread | None = None
+        self.processing_thread: threading.Thread | None = None
+        self.run_event = threading.Event()
+        self.capture_lock = threading.Lock()
+        self.latest_capture_frame: Any | None = None
+        self.latest_capture_at: float = 0.0
+        self.last_processed_capture_at: float = 0.0
+        self.decision_lock = threading.Lock()
+        self.latest_decision: BehaviorDecision = _empty_decision()
         self.behavior = BehaviorTracker(config)
+        self.theft_tracker = PackageTheftTracker(config)
+        self._prev_motion_gray: Any | None = None
         self._artifact_dir_ensured = False
         # Demo-mode flag driving carryable label set
         self._carryable_label_set: set[str] = {
@@ -755,52 +865,15 @@ class VisionEngine:
         # Throttle for "why didn't this fire" debug log so we don't spam.
         self._last_fire_block_log_at: float = 0.0
         self._router_url_warned = False
-        # Throttle for the per-frame "suppressed by face filter" log line.
-        self._last_face_suppress_log_at: float = 0.0
-
-        # Face exclusion: built lazily so an InsightFace / onnxruntime import
-        # error only matters when the feature is actually enabled. The
-        # resolver wraps FaceFilter with track-anchored identity (one clean
-        # face read tags the YOLO+ByteTrack track id, surviving brief
-        # occlusions) and an optional body-ReID fallback for ID switches.
-        self.face_filter: FaceFilter | None = None
-        self.face_resolver: TrackIdentityResolver | None = None
-        if config.face_filter_enabled:
-            try:
-                embedder = InsightFaceEmbedder(
-                    model_name=config.face_model_name,
-                    apply_clahe=config.face_clahe_enabled,
-                )
-                self.face_filter = FaceFilter(
-                    db_path=config.face_db_path,
-                    similarity_threshold=config.face_similarity_threshold,
-                    min_face_pixels=config.face_min_pixels,
-                    min_det_score=config.face_min_det_score,
-                    max_yaw_degrees=config.face_max_yaw_degrees,
-                    max_pitch_degrees=config.face_max_pitch_degrees,
-                    topk_match=config.face_topk_match,
-                    embedder=embedder,
-                )
-                body_embedder = self._build_body_embedder() if config.face_body_reid_enabled else None
-                self.face_resolver = TrackIdentityResolver(
-                    self.face_filter,
-                    body_embedder=body_embedder,
-                    anchor_ttl_seconds=config.face_anchor_ttl_seconds,
-                    anchor_min_frames=config.face_anchor_min_frames,
-                    strong_anchor_similarity=config.face_strong_anchor_similarity,
-                    body_reid_threshold=config.face_body_reid_threshold,
-                )
-            except Exception:
-                log.exception(
-                    "Face exclusion failed to initialize; continuing without it. "
-                    "Set FACE_FILTER_ENABLED=false to silence this."
-                )
-                self.face_filter = None
-                self.face_resolver = None
+        self.yolo_world = None
+        self._cardboard_backend_active = self._normalize_cardboard_backend(
+            config.cardboard_detector_backend
+        )
 
         self.yolo = YOLO(config.yolo_model)
         self.yolo.to(self.device)
         self._monitored_class_ids = self._resolve_monitored_class_ids()
+        self._init_cardboard_detector()
 
         self.processor = None
         self.qwen = None
@@ -822,24 +895,76 @@ class VisionEngine:
                 daemon=True,
             )
             self.worker_thread.start()
-        log.info(
-            "Vision engine ready device=%s source=%r yolo=%s qwen=%s capture=%sx%s "
-            "person_conf=%s carryable_conf=%s zone=%s demo_bias=%s mock=%s post=%s overlay=%s artifacts=%s",
-            self.device,
-            self.source,
-            self.config.yolo_model,
-            self.config.qwen_model,
-            self.config.capture_width,
-            self.config.capture_height,
-            self.config.person_confidence,
-            self.config.carryable_confidence,
-            self.config.entry_zone,
-            self.config.demo_mode_theft_bias,
-            self.config.mock_classifier,
-            self.config.post_events,
-            self.config.debug_overlay,
-            self.config.save_failure_artifacts,
-        )
+        if self.config.post_events:
+            self.publisher_thread = threading.Thread(
+                target=self._publisher_worker,
+                name="event-publisher",
+                daemon=True,
+            )
+            self.publisher_thread.start()
+        if self.config.save_failure_artifacts:
+            self.artifact_thread = threading.Thread(
+                target=self._artifact_worker,
+                name="artifact-writer",
+                daemon=True,
+            )
+            self.artifact_thread.start()
+        print()
+        print(f"{_PRETTY_GREEN}{_PRETTY_BOLD}{_PRETTY_BAR}{_PRETTY_RESET}")
+        print(f"{_PRETTY_GREEN}{_PRETTY_BOLD}  ✓ ThirdEye vision engine ready{_PRETTY_RESET}")
+        print(f"  {_PRETTY_DIM}device  {_PRETTY_RESET} {self.device}")
+        print(f"  {_PRETTY_DIM}yolo    {_PRETTY_RESET} {self.config.yolo_model}")
+        print(f"  {_PRETTY_DIM}qwen    {_PRETTY_RESET} {self.config.qwen_model}")
+        print(f"  {_PRETTY_DIM}cardbrd {_PRETTY_RESET} {self._cardboard_backend_active}")
+        print(f"  {_PRETTY_DIM}capture {_PRETTY_RESET} {self.config.capture_width}x{self.config.capture_height}")
+        print(f"  {_PRETTY_DIM}router  {_PRETTY_RESET} {'on' if self.config.post_events else 'off'}")
+        print(f"{_PRETTY_GREEN}{_PRETTY_BOLD}{_PRETTY_BAR}{_PRETTY_RESET}")
+        print()
+
+    @staticmethod
+    def _normalize_cardboard_backend(raw: str) -> str:
+        backend = (raw or "opencv").strip().lower().replace("-", "_")
+        if backend in {"world", "yoloworld", "yolo_world"}:
+            return "yolo_world"
+        if backend in {"cv", "opencv", "color", "color_shape"}:
+            return "opencv"
+        if backend in {"auto", "off"}:
+            return backend
+        log.warning("Unknown CARDBOARD_DETECTOR_BACKEND=%r; using opencv", raw)
+        return "opencv"
+
+    def _init_cardboard_detector(self) -> None:
+        if not self.config.cardboard_box_enable:
+            self._cardboard_backend_active = "off"
+            return
+        if self._cardboard_backend_active not in {"yolo_world", "auto"}:
+            return
+        if YOLOWorld is None:
+            log.warning("YOLO-World is unavailable in this Ultralytics install.")
+            self._cardboard_backend_active = (
+                "opencv" if self._cardboard_backend_active == "auto" else "off"
+            )
+            return
+
+        classes = [label.strip() for label in self.config.yolo_world_cardboard_classes if label.strip()]
+        if not classes:
+            classes = ["cardboard box"]
+        try:
+            self.yolo_world = YOLOWorld(self.config.yolo_world_model)
+            self.yolo_world.set_classes(classes)
+            self.yolo_world.to(self.device)
+            self._cardboard_backend_active = "yolo_world"
+            log.info(
+                "YOLO-World cardboard detector ready model=%s classes=%s",
+                self.config.yolo_world_model,
+                classes,
+            )
+        except Exception as exc:  # pragma: no cover - network/model availability varies
+            log.warning("Could not initialize YOLO-World cardboard detector: %s", exc)
+            self.yolo_world = None
+            self._cardboard_backend_active = (
+                "opencv" if self._cardboard_backend_active == "auto" else "off"
+            )
 
     # ---------------------------------------------------------------------
     # Capture loop
@@ -857,213 +982,248 @@ class VisionEngine:
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.capture_width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.capture_height)
 
-        # Tell the action router this engine is fully warmed up. Best-effort:
-        # standalone runs (no router) silently no-op. The router uses this to
-        # flip our /api/cameras entry from "warming" to "running" so demo
-        # flows don't fire theft triggers into a still-loading Qwen process.
-        if self.config.post_events:
-            post_ready_signal(self.config)
-
         if self.show_window:
             print("Vision engine running. Press 'q' in the preview window to quit.")
         else:
             print("Vision engine running without a preview window. Use Ctrl+C to quit.")
 
-        try:
-            while True:
-                loop_started_at = time.time()
+        self.run_event.set()
+        self.capture_thread = threading.Thread(
+            target=self._capture_worker,
+            args=(cap,),
+            name="camera-capture",
+            daemon=True,
+        )
+        self.capture_thread.start()
+        self.processing_thread = threading.Thread(
+            target=self._processing_worker,
+            name="vision-processing",
+            daemon=True,
+        )
+        self.processing_thread.start()
 
-                ok, frame = cap.read()
-                if not ok:
-                    log.warning("Webcam / stream frame grab failed; retrying.")
-                    self._throttle_loop(loop_started_at)
+        try:
+            while self.run_event.is_set():
+                loop_started_at = time.time()
+                frame, _ = self._get_latest_capture_frame()
+                if frame is None:
+                    self._throttle_display_loop(loop_started_at)
                     continue
 
-                self.frame_seq += 1
-                captured_at = time.time()
-                self.frame_buffer.append(
-                    BufferedFrame(timestamp=captured_at, frame_bgr=frame.copy())
-                )
-
-                fh, fw = frame.shape[:2]
-                persons, carryables = self._detect_persons_and_carryables(frame)
-                self._update_active_incident(
-                    now=captured_at,
-                    has_signal=bool(persons or carryables),
-                )
-
-                decision = self.behavior.update(
-                    now=captured_at,
-                    person_dets=persons,
-                    carryable_dets=carryables,
-                    frame_size=(fw, fh),
-                )
-
-                if self.config.debug_detections:
-                    log.info(
-                        "frame=%d state=%s cues=%s persons=%s carryables=%s",
-                        self.frame_seq,
-                        decision.state,
-                        decision.cues,
-                        [(d.label, round(d.confidence, 2)) for d in persons],
-                        [(d.label, round(d.confidence, 2)) for d in carryables],
-                    )
-
-                # Demo fast-path: if no fire in N seconds AND we see a person
-                # right now, classify anyway. Means a punch / theft caught
-                # outside the entry zone still triggers a call.
-                fast_path = self._should_fast_path(persons, carryables, captured_at)
-                should_fire = decision.should_classify or fast_path
-
-                if not should_fire and persons:
-                    self._log_fire_block(
-                        decision=decision,
-                        persons=persons,
-                        carryables=carryables,
-                        now=captured_at,
-                    )
-
-                if should_fire:
-                    yolo_classes = sorted(
-                        {d.label for d in persons} | {d.label for d in carryables}
-                    ) or ["person"]
-
-                    # Family-face exclusion: if every visible person is a known
-                    # family member, suppress the (expensive) Qwen call.
-                    if self._is_all_family(frame, persons, captured_at):
-                        # Reset suppression on the BehaviorTracker so the next
-                        # candidate (a stranger) can still fire — otherwise the
-                        # cooldown set during the abandoned fire would block it.
-                        self.behavior.suppression_active = False
-                        self.behavior.last_emitted_at = 0.0
-                        if decision.candidate is not None:
-                            decision.candidate.alert_fired = False
-                        if self.config.save_failure_artifacts:
-                            self._save_artifact(
-                                kind="face_suppressed",
-                                frame_bgr=frame,
-                                decision=decision,
-                                persons=persons,
-                                carryables=carryables,
-                            )
-                        if self.config.face_emit_ambient_event:
-                            self._emit_family_ambient_event(persons, yolo_classes)
-                        # Skip classification entirely.
-                        if self.show_window:
-                            if self.config.debug_overlay:
-                                with self.state_lock:
-                                    last_cls = self.last_classification
-                                _draw_overlay(
-                                    frame,
-                                    config=self.config,
-                                    decision=decision,
-                                    last_classification=last_cls,
-                                )
-                            cv2.imshow("ThirdEye Vision Engine", frame)
-                            if cv2.waitKey(1) & 0xFF == ord("q"):
-                                break
-                        self._throttle_loop(loop_started_at)
-                        continue
-
-                    if fast_path and not decision.should_classify:
-                        log.info(
-                            "Fast-path firing: %s with %s",
-                            [d.label for d in persons],
-                            [d.label for d in carryables] or "no carryable",
-                        )
-                    elif decision.candidate and decision.candidate.last_carryable_label:
-                        log.info(
-                            "Candidate firing: carryable=%s frames=%d dwell=%.2fs",
-                            decision.candidate.last_carryable_label,
-                            decision.candidate.interaction_frames,
-                            decision.candidate.recent_zone_dwell,
-                        )
-                    latest_frame = self.frame_buffer[-1]
-
-                    if self.config.mock_classifier:
-                        parsed, raw = self._classify_with_qwen([frame], 0.0)
-                        if parsed:
-                            event = build_event(
-                                classification=parsed,
-                                node_id=self.config.node_id,
-                                frame_seq=self.frame_seq,
-                                yolo_classes=yolo_classes,
-                                raw_classifier=raw,
-                                incident_id=self._incident_id_for_emit(captured_at),
-                            )
-                            self._attach_clip(event)
-                            self._update_last_classification(event)
-                            print(json.dumps(event, ensure_ascii=True))
-                            self._publish_event(event)
-                        fired = True
-                        self._mark_incident_emitted(captured_at)
-                        self._last_fire_at = captured_at
-                    else:
-                        # Multi-frame: pass the most recent N frames so Qwen
-                        # can see motion (a swing, a grab, a fall).
-                        recent = self._collect_recent_frames(self.config.qwen_frames_per_inference)
-                        request = ClassificationRequest(
-                            timestamp=latest_frame.timestamp,
-                            frame_seq=self.frame_seq,
-                            frame_bgr=latest_frame.frame_bgr.copy(),
-                            yolo_classes=yolo_classes,
-                            extra_frames=recent[:-1],  # historical context
-                        )
-                        fired = self._submit_classification(request)
-                        if fired:
-                            self._mark_incident_emitted(captured_at)
-                            self._last_fire_at = captured_at
-
-                    if self.config.save_failure_artifacts:
-                        self._save_artifact(
-                            kind="emit" if fired else "emit_dropped",
-                            frame_bgr=latest_frame.frame_bgr,
-                            decision=decision,
-                            persons=persons,
-                            carryables=carryables,
-                        )
-                elif decision.near_miss and self.config.save_failure_artifacts:
-                    self._save_artifact(
-                        kind="near_miss",
-                        frame_bgr=frame,
-                        decision=decision,
-                        persons=persons,
-                        carryables=carryables,
-                    )
-
                 if self.show_window:
+                    display = frame.copy()
                     if self.config.debug_overlay:
+                        with self.decision_lock:
+                            decision = self.latest_decision
                         with self.state_lock:
                             last_cls = self.last_classification
                         _draw_overlay(
-                            frame,
+                            display,
                             config=self.config,
                             decision=decision,
                             last_classification=last_cls,
                         )
-                    cv2.imshow("ThirdEye Vision Engine", frame)
+                    cv2.imshow("ThirdEye Vision Engine", display)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
+                        self.run_event.clear()
                         break
 
-                self._throttle_loop(loop_started_at)
+                self._throttle_display_loop(loop_started_at)
         finally:
+            self.run_event.clear()
+            if self.capture_thread is not None:
+                self.capture_thread.join(timeout=1.0)
+            if self.processing_thread is not None:
+                self.processing_thread.join(timeout=1.0)
             cap.release()
             if self.show_window:
                 cv2.destroyAllWindows()
             self._stop_worker()
+            self._stop_background_workers()
 
     # ---------------------------------------------------------------------
     # Detection helpers
     # ---------------------------------------------------------------------
 
+    def _capture_worker(self, cap: Any) -> None:
+        while self.run_event.is_set():
+            ok, frame = self._read_latest_frame(cap)
+            if not ok:
+                time.sleep(0.01)
+                continue
+            with self.capture_lock:
+                self.latest_capture_frame = frame
+                self.latest_capture_at = time.time()
+
+    def _get_latest_capture_frame(self) -> tuple[Any | None, float]:
+        with self.capture_lock:
+            if self.latest_capture_frame is None:
+                return None, 0.0
+            return self.latest_capture_frame.copy(), self.latest_capture_at
+
+    def _processing_worker(self) -> None:
+        while self.run_event.is_set():
+            loop_started_at = time.time()
+            frame, captured_at = self._get_latest_capture_frame()
+            if frame is None or captured_at <= self.last_processed_capture_at:
+                self._throttle_loop(loop_started_at)
+                continue
+            if self.config.pause_detection_while_classifying and self._classification_busy():
+                # Avoid YOLO+Qwen contention on MPS; capture/display continues
+                # independently so the preview remains responsive.
+                self._throttle_loop(loop_started_at)
+                continue
+            self.last_processed_capture_at = captured_at
+
+            self.frame_seq += 1
+            self.frame_buffer.append(
+                BufferedFrame(timestamp=captured_at, frame_bgr=frame.copy())
+            )
+
+            _fh, _fw = frame.shape[:2]
+            persons, carryables = self._detect_persons_and_carryables(frame)
+            self._update_active_incident(
+                now=captured_at,
+                has_signal=bool(persons or carryables),
+            )
+            person_boxes = [d.box for d in persons]
+            package_dets = [
+                PackageDetection(label=d.label, confidence=d.confidence, box=d.box)
+                for d in carryables
+            ]
+            feet_motion = self._detect_feet_motion_in_entry_zone(frame)
+            theft_decision = self.theft_tracker.update(
+                now=captured_at,
+                person_boxes=person_boxes,
+                package_dets=package_dets,
+                feet_motion_present=feet_motion,
+            )
+            decision = self._behavior_from_theft(theft_decision, persons, carryables)
+            with self.decision_lock:
+                self.latest_decision = decision
+
+            if self.config.debug_detections:
+                log.info(
+                    "frame=%d state=%s cues=%s persons=%s carryables=%s",
+                    self.frame_seq,
+                    decision.state,
+                    decision.cues,
+                    [(d.label, round(d.confidence, 2)) for d in persons],
+                    [(d.label, round(d.confidence, 2)) for d in carryables],
+                )
+
+            should_fire = theft_decision.should_emit
+            if should_fire and self._should_suppress_duplicate_theft_emit():
+                log.info(
+                    "Suppressing duplicate theft emit for active incident %s",
+                    self._active_incident_id,
+                )
+                should_fire = False
+
+            if not should_fire and persons:
+                self._log_fire_block(
+                    decision=decision,
+                    persons=persons,
+                    carryables=carryables,
+                    now=captured_at,
+                )
+
+            if should_fire:
+                yolo_classes = sorted(
+                    {d.label for d in persons} | {d.label for d in carryables}
+                ) or ["person"]
+                _print_pretty_theft(
+                    theft_decision.state,
+                    theft_decision.anchor_label,
+                    list(theft_decision.cues),
+                )
+                latest_frame = self.frame_buffer[-1]
+
+                if self.config.mock_classifier:
+                    parsed, raw = self._classify_with_qwen([frame], 0.0)
+                    if parsed is None:
+                        parsed = {
+                            "tier": 3,
+                            "behavior_pattern": "taking_item",
+                            "confidence": 0.6,
+                            "scene": "the camera view",
+                            "suspect_description": "person near the package",
+                            "one_line_summary": "Person removed a package from the monitored zone",
+                            "time_elapsed": "0.00s",
+                        }
+                    else:
+                        parsed = {
+                            "tier": 3,
+                            "behavior_pattern": "taking_item",
+                            "confidence": float(parsed.get("confidence", 0.6)),
+                            "scene": str(parsed.get("scene", "the camera view")),
+                            "suspect_description": str(
+                                parsed.get("suspect_description", "person near the package")
+                            ),
+                            "one_line_summary": str(
+                                parsed.get(
+                                    "one_line_summary",
+                                    "Person removed a package from the monitored zone",
+                                )
+                            ),
+                            "time_elapsed": str(parsed.get("time_elapsed", "0.00s")),
+                        }
+                    event = build_event(
+                        classification=parsed,
+                        node_id=self.config.node_id,
+                        frame_seq=self.frame_seq,
+                        yolo_classes=yolo_classes,
+                        raw_classifier=raw,
+                        incident_id=self._incident_id_for_emit(captured_at),
+                    )
+                    self._update_last_classification(event)
+                    _print_pretty_event(event)
+                    self._publish_event(event)
+                    fired = True
+                    self._mark_incident_emitted(captured_at)
+                    self._last_fire_at = captured_at
+                else:
+                    recent = self._collect_recent_frames(self.config.qwen_frames_per_inference)
+                    request = ClassificationRequest(
+                        timestamp=latest_frame.timestamp,
+                        frame_seq=self.frame_seq,
+                        frame_bgr=latest_frame.frame_bgr.copy(),
+                        yolo_classes=yolo_classes,
+                        extra_frames=recent[:-1],
+                    )
+                    fired = self._submit_classification(request)
+                    if fired:
+                        self._mark_incident_emitted(captured_at)
+                        self._last_fire_at = captured_at
+
+                if self.config.save_failure_artifacts:
+                    self._save_artifact(
+                        kind="emit" if fired else "emit_dropped",
+                        frame_bgr=latest_frame.frame_bgr,
+                        decision=decision,
+                        persons=persons,
+                        carryables=carryables,
+                    )
+            elif decision.near_miss and self.config.save_failure_artifacts:
+                self._save_artifact(
+                    kind="near_miss",
+                    frame_bgr=frame,
+                    decision=decision,
+                    persons=persons,
+                    carryables=carryables,
+                )
+
+            self._throttle_loop(loop_started_at)
+
     def _detected_classes(self, frame_bgr: Any) -> list[str]:
         """Legacy entry-point kept for tests + simple callers."""
+        imgsz = self._active_yolo_input_size()
         results = self.yolo.predict(
             source=frame_bgr,
             classes=self._monitored_class_ids,
             conf=min(self.config.person_confidence, self.config.carryable_confidence),
             device=self.device,
-            imgsz=self.config.yolo_input_size,
+            imgsz=imgsz,
             verbose=False,
         )
         if not results:
@@ -1080,58 +1240,7 @@ class VisionEngine:
     def _detect_persons_and_carryables(
         self, frame_bgr: Any
     ) -> tuple[list[Detection], list[Detection]]:
-        """Run YOLO with built-in ByteTrack and post-filter per class.
-
-        We use `track(persist=True)` instead of `predict()` so each detection
-        carries a stable track id across frames. The track id is what lets the
-        face-exclusion layer ride through brief face occlusions (e.g. someone
-        bending over a package): identity is anchored on the track, not the
-        per-frame face read. Falls back to predict-style results if the YOLO
-        backend doesn't expose `.id`.
-        """
-        lower_conf = min(self.config.person_confidence, self.config.carryable_confidence)
-        results = self.yolo.track(
-            source=frame_bgr,
-            classes=self._monitored_class_ids,
-            conf=lower_conf,
-            device=self.device,
-            imgsz=self.config.yolo_input_size,
-            persist=True,
-            tracker="bytetrack.yaml",
-            verbose=False,
-        )
-        if not results:
-            return [], []
-
-        result = results[0]
-        names = result.names
-        boxes = result.boxes
-        if boxes is None or len(boxes) == 0:
-            return [], []
-
-        cls_list = boxes.cls.tolist()
-        try:
-            conf_list = boxes.conf.tolist()
-            xyxy_list = boxes.xyxy.tolist()
-        except AttributeError:
-            return [], []
-
-        # `boxes.id` is None on frames before ByteTrack confirms tracks, and
-        # rows can be NaN for unconfirmed detections — handle both.
-        id_list: list[int | None]
-        raw_ids = getattr(boxes, "id", None)
-        if raw_ids is None:
-            id_list = [None] * len(cls_list)
-        else:
-            try:
-                id_values = raw_ids.tolist()
-            except AttributeError:
-                id_values = list(raw_ids)
-            id_list = [
-                int(v) if v is not None and not (isinstance(v, float) and v != v) else None
-                for v in id_values
-            ]
-
+        """Run YOLO once at the lower threshold and post-filter per class."""
         persons: list[Detection] = []
         carryables: list[Detection] = []
         if hasattr(frame_bgr, "shape") and len(frame_bgr.shape) >= 2:
@@ -1140,24 +1249,145 @@ class VisionEngine:
             frame_h, frame_w = self.config.capture_height, self.config.capture_width
         frame_size = (frame_w, frame_h)
         frame_area = float(frame_w * frame_h)
-        for cls_id, conf, xyxy, track_id in zip(cls_list, conf_list, xyxy_list, id_list):
+
+        lower_conf = min(self.config.person_confidence, self.config.carryable_confidence)
+        imgsz = self._active_yolo_input_size()
+        results = self.yolo.predict(
+            source=frame_bgr,
+            classes=self._monitored_class_ids,
+            conf=lower_conf,
+            device=self.device,
+            imgsz=imgsz,
+            verbose=False,
+        )
+        if not results:
+            return persons, self._append_cardboard_boxes(
+                frame_bgr, frame_size=frame_size, persons=persons, carryables=carryables
+            )
+
+        result = results[0]
+        names = result.names
+        boxes = result.boxes
+        if boxes is None or len(boxes) == 0:
+            return persons, self._append_cardboard_boxes(
+                frame_bgr, frame_size=frame_size, persons=persons, carryables=carryables
+            )
+
+        cls_list = boxes.cls.tolist()
+        try:
+            conf_list = boxes.conf.tolist()
+            xyxy_list = boxes.xyxy.tolist()
+        except AttributeError:
+            return persons, self._append_cardboard_boxes(
+                frame_bgr, frame_size=frame_size, persons=persons, carryables=carryables
+            )
+
+        for cls_id, conf, xyxy in zip(cls_list, conf_list, xyxy_list):
             cls_id = int(cls_id)
             label = str(names.get(cls_id, str(cls_id))) if hasattr(names, "get") else str(names[cls_id])
             box = (float(xyxy[0]), float(xyxy[1]), float(xyxy[2]), float(xyxy[3]))
-            det = Detection(
-                cls_id=cls_id,
-                label=label,
-                confidence=float(conf),
-                box=box,
-                track_id=track_id,
-            )
+            det = Detection(cls_id=cls_id, label=label, confidence=float(conf), box=box)
             if cls_id == PERSON_CLASS_ID:
                 if self._allow_person_detection(det, frame_size=frame_size, frame_area=frame_area):
                     persons.append(det)
             elif self._normalize_monitored_label(label) in self._carryable_label_set:
                 if self._allow_carryable_detection(det, frame_bgr=frame_bgr, frame_size=frame_size):
                     carryables.append(det)
+        carryables = self._append_cardboard_boxes(
+            frame_bgr, frame_size=frame_size, persons=persons, carryables=carryables
+        )
         return persons, carryables
+
+    def _active_yolo_input_size(self) -> int:
+        """Pick YOLO inference size based on current engine load.
+
+        Qwen and YOLO both run on MPS in this project. When Qwen generation is
+        in-flight, shrinking YOLO imgsz helps preserve preview smoothness.
+        """
+        base = max(64, int(self.config.yolo_input_size))
+        busy = int(self.config.yolo_input_size_busy)
+        if busy <= 0:
+            return base
+        if self._classification_busy():
+            return max(64, min(base, busy))
+        return base
+
+    def _read_latest_frame(self, cap: Any) -> tuple[bool, Any]:
+        """Read the freshest camera frame, dropping stale buffered frames.
+
+        On some OpenCV backends (especially network/MJPEG streams), CAP_PROP_BUFFERSIZE
+        is ignored and `read()` can lag behind real time under load. Grabbing a
+        couple of queued frames before decoding keeps UI latency lower.
+        """
+        drain_count = max(0, int(self.config.capture_buffer_drain_grabs))
+        if drain_count <= 0:
+            return cap.read()
+
+        grabbed = 0
+        for _ in range(drain_count):
+            if not cap.grab():
+                break
+            grabbed += 1
+        if grabbed > 0:
+            ok, frame = cap.retrieve()
+            if ok:
+                return ok, frame
+        return cap.read()
+
+    def _behavior_from_theft(
+        self,
+        theft_decision: TheftDecision,
+        persons: list[Detection],
+        carryables: list[Detection],
+    ) -> BehaviorDecision:
+        return BehaviorDecision(
+            state=theft_decision.state,
+            cues=list(theft_decision.cues),
+            should_classify=theft_decision.should_emit,
+            suppression_active=False,
+            last_emitted_at=self.theft_tracker.last_emit_at,
+            candidate=None,
+            person_boxes=persons,
+            carryable_boxes=carryables,
+            package_anchor_label=theft_decision.anchor_label,
+            package_anchor_box=theft_decision.anchor_box,
+            near_miss=False,
+        )
+
+    def _detect_feet_motion_in_entry_zone(self, frame_bgr: Any) -> bool:
+        if not self.config.feet_motion_enable:
+            return False
+        if not hasattr(frame_bgr, "shape") or len(frame_bgr.shape) < 2:
+            return False
+
+        h, w = frame_bgr.shape[:2]
+        if self.config.use_entry_zone:
+            x1 = int(self.config.entry_zone[0] * w)
+            y1 = int(self.config.entry_zone[1] * h)
+            x2 = int(self.config.entry_zone[2] * w)
+            y2 = int(self.config.entry_zone[3] * h)
+        else:
+            x1, y1, x2, y2 = (0, 0, w, h)
+        y_start = max(y1, int(h * 0.55))
+        if x2 <= x1 or y2 <= y_start:
+            return False
+
+        roi = frame_bgr[y_start:y2, x1:x2]
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (5, 5), 0)
+        if self._prev_motion_gray is None:
+            self._prev_motion_gray = gray
+            return False
+
+        diff = cv2.absdiff(self._prev_motion_gray, gray)
+        self._prev_motion_gray = gray
+        _, mask = cv2.threshold(diff, 20, 255, cv2.THRESH_BINARY)
+        mask = cv2.dilate(mask, None, iterations=2)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        total_area = 0.0
+        for c in contours:
+            total_area += cv2.contourArea(c)
+        return total_area >= float(self.config.feet_motion_min_area)
 
     def _allow_person_detection(
         self,
@@ -1168,7 +1398,11 @@ class VisionEngine:
     ) -> bool:
         if det.confidence < self.config.person_confidence:
             return False
-        in_zone = _point_in_zone(_box_center(det.box), self.config.entry_zone, frame_size)
+        in_zone = (
+            _point_in_zone(_box_center(det.box), self.config.entry_zone, frame_size)
+            if self.config.use_entry_zone
+            else True
+        )
         if in_zone:
             return True
         area_ratio = _box_area(det.box) / max(frame_area, 1.0)
@@ -1193,11 +1427,273 @@ class VisionEngine:
         )
         if det.confidence < min_conf:
             return False
-        if not _point_in_zone(_box_center(det.box), self.config.entry_zone, frame_size):
+        if self.config.use_entry_zone and not _point_in_zone(
+            _box_center(det.box), self.config.entry_zone, frame_size
+        ):
             return False
         if _touches_frame_edge(det.box, frame_size, self.config.edge_margin_ratio):
             return False
         return True
+
+    def _append_cardboard_boxes(
+        self,
+        frame_bgr: Any,
+        *,
+        frame_size: tuple[int, int],
+        persons: list[Detection],
+        carryables: list[Detection],
+    ) -> list[Detection]:
+        cardboard = self._detect_cardboard_boxes(
+            frame_bgr,
+            frame_size=frame_size,
+            persons=persons,
+        )
+        if not cardboard:
+            return carryables
+        merged = list(carryables)
+        for det in cardboard:
+            if any(_box_iou(det.box, existing.box) > 0.35 for existing in merged):
+                continue
+            merged.append(det)
+        return merged
+
+    def _detect_cardboard_boxes(
+        self,
+        frame_bgr: Any,
+        *,
+        frame_size: tuple[int, int],
+        persons: list[Detection] | None = None,
+    ) -> list[Detection]:
+        if not self.config.cardboard_box_enable:
+            return []
+        if not hasattr(frame_bgr, "shape") or len(frame_bgr.shape) < 2:
+            return []
+        if self._cardboard_backend_active == "yolo_world":
+            return self._detect_cardboard_boxes_yolo_world(
+                frame_bgr,
+                frame_size=frame_size,
+                persons=persons,
+            )
+        if self._cardboard_backend_active == "off":
+            return []
+        return self._detect_cardboard_boxes_opencv(
+            frame_bgr,
+            frame_size=frame_size,
+            persons=persons,
+        )
+
+    def _detect_cardboard_boxes_yolo_world(
+        self,
+        frame_bgr: Any,
+        *,
+        frame_size: tuple[int, int],
+        persons: list[Detection] | None = None,
+    ) -> list[Detection]:
+        if self.yolo_world is None:
+            return []
+        try:
+            results = self.yolo_world.predict(
+                source=frame_bgr,
+                conf=float(self.config.yolo_world_confidence),
+                device=self.device,
+                imgsz=max(64, int(self.config.yolo_world_input_size)),
+                verbose=False,
+            )
+        except Exception as exc:
+            log.warning("YOLO-World cardboard inference failed: %s", exc)
+            return []
+        if not results:
+            return []
+        boxes = results[0].boxes
+        if boxes is None or len(boxes) == 0:
+            return []
+        try:
+            conf_list = boxes.conf.tolist()
+            xyxy_list = boxes.xyxy.tolist()
+        except AttributeError:
+            return []
+
+        candidates: list[Detection] = []
+        for conf, xyxy in zip(conf_list, xyxy_list):
+            box = (float(xyxy[0]), float(xyxy[1]), float(xyxy[2]), float(xyxy[3]))
+            det = Detection(
+                cls_id=-200,
+                label="cardboard box",
+                confidence=float(conf),
+                box=box,
+            )
+            if self._allow_yolo_world_cardboard_detection(
+                det,
+                frame_size=frame_size,
+                persons=persons or [],
+            ):
+                candidates.append(det)
+
+        candidates.sort(key=lambda det: det.confidence, reverse=True)
+        return candidates[:1]
+
+    def _allow_yolo_world_cardboard_detection(
+        self,
+        det: Detection,
+        *,
+        frame_size: tuple[int, int],
+        persons: list[Detection],
+    ) -> bool:
+        if det.confidence < float(self.config.yolo_world_confidence):
+            return False
+        if self.config.use_entry_zone and not _point_in_zone(
+            _box_center(det.box), self.config.entry_zone, frame_size
+        ):
+            return False
+        frame_w, frame_h = frame_size
+        area_ratio = _box_area(det.box) / max(float(frame_w * frame_h), 1.0)
+        if area_ratio < float(self.config.cardboard_box_min_area_ratio):
+            return False
+        max_area_ratio = max(float(self.config.cardboard_box_max_area_ratio), 0.55)
+        if area_ratio > max_area_ratio:
+            return False
+        if self._person_overlap_ratio(det.box, persons) > 0.85:
+            return False
+        x1, y1, x2, y2 = det.box
+        width = max(0.0, x2 - x1)
+        height = max(0.0, y2 - y1)
+        if width < 12.0 or height < 12.0:
+            return False
+        aspect = width / max(height, 1.0)
+        return 0.20 <= aspect <= 5.0
+
+    def _detect_cardboard_boxes_opencv(
+        self,
+        frame_bgr: Any,
+        *,
+        frame_size: tuple[int, int],
+        persons: list[Detection] | None = None,
+    ) -> list[Detection]:
+        frame_w, frame_h = frame_size
+        frame_area = max(1.0, float(frame_w * frame_h))
+        min_area = frame_area * float(self.config.cardboard_box_min_area_ratio)
+        max_area = frame_area * float(self.config.cardboard_box_max_area_ratio)
+
+        hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+        # Cardboard under phone-camera lighting is usually yellow/tan. Keep
+        # the hue away from red/pink because skin and hoodie sleeves otherwise
+        # create large false boxes in the foreground.
+        tan_mask = cv2.inRange(hsv, (14, 12, 35), (42, 220, 255))
+        brown_mask = cv2.inRange(hsv, (12, 35, 30), (32, 255, 225))
+        mask = cv2.bitwise_or(tan_mask, brown_mask)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        candidates: list[tuple[float, Detection]] = []
+        for contour in contours:
+            area = float(cv2.contourArea(contour))
+            if area < min_area or area > max_area:
+                continue
+
+            x, y, w, h = cv2.boundingRect(contour)
+            if w <= 0 or h <= 0:
+                continue
+            box = (float(x), float(y), float(x + w), float(y + h))
+            if self.config.use_entry_zone and not _point_in_zone(
+                _box_center(box), self.config.entry_zone, frame_size
+            ):
+                continue
+            area_ratio = area / frame_area
+            person_overlap = self._person_overlap_ratio(box, persons or [])
+            touches_edge = _touches_frame_edge(
+                box,
+                frame_size,
+                float(self.config.cardboard_box_edge_margin_ratio),
+            )
+            if touches_edge and area < max(min_area * 3.0, frame_area * 0.02):
+                continue
+
+            aspect = w / max(float(h), 1.0)
+            if aspect < 0.35 or aspect > 3.0:
+                continue
+            extent = area / max(float(w * h), 1.0)
+            if extent < float(self.config.cardboard_box_min_extent):
+                continue
+
+            mask_area = float(cv2.countNonZero(mask[y : y + h, x : x + w]))
+            mask_coverage = mask_area / max(float(w * h), 1.0)
+            score = self._cardboard_candidate_score(
+                box,
+                frame_size=frame_size,
+                area_ratio=area_ratio,
+                extent=extent,
+                mask_coverage=mask_coverage,
+                person_overlap=person_overlap,
+            )
+            if score < float(self.config.cardboard_box_min_score):
+                continue
+
+            confidence = min(0.88, max(float(self.config.cardboard_box_min_confidence), score))
+            candidates.append(
+                (
+                    score,
+                    Detection(
+                        cls_id=-100,
+                        label="cardboard box",
+                        confidence=confidence,
+                        box=box,
+                    ),
+                )
+            )
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        if candidates:
+            return [candidates[0][1]]
+        return []
+
+    def _cardboard_candidate_score(
+        self,
+        box: tuple[float, float, float, float],
+        *,
+        frame_size: tuple[int, int],
+        area_ratio: float,
+        extent: float,
+        mask_coverage: float,
+        person_overlap: float,
+    ) -> float:
+        _frame_w, frame_h = frame_size
+        _cx, cy = _box_center(box)
+        cy_norm = cy / max(float(frame_h), 1.0)
+        floor_min = float(self.config.cardboard_box_floor_min_y_ratio)
+        floor_score = max(0.0, min(1.0, (cy_norm - (floor_min - 0.16)) / 0.28))
+        size_score = max(0.0, min(1.0, area_ratio / 0.035))
+        shape_score = max(0.0, min(1.0, extent / 0.70))
+        color_score = max(0.0, min(1.0, mask_coverage / 0.65))
+        person_penalty = max(0.0, min(0.80, person_overlap * 1.4))
+        return (
+            (0.34 * floor_score)
+            + (0.24 * size_score)
+            + (0.22 * shape_score)
+            + (0.20 * color_score)
+            - person_penalty
+        )
+
+    @staticmethod
+    def _person_overlap_ratio(
+        box: tuple[float, float, float, float],
+        persons: list[Detection],
+    ) -> float:
+        if not persons:
+            return 0.0
+        bx1, by1, bx2, by2 = box
+        box_area = max(1.0, _box_area(box))
+        max_overlap = 0.0
+        for person in persons:
+            px1, py1, px2, py2 = person.box
+            ix1 = max(bx1, px1)
+            iy1 = max(by1, py1)
+            ix2 = min(bx2, px2)
+            iy2 = min(by2, py2)
+            inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+            max_overlap = max(max_overlap, inter / box_area)
+        return max_overlap
 
     def _resolve_monitored_class_ids(self) -> list[int]:
         names = getattr(self.yolo, "names", None)
@@ -1332,7 +1828,39 @@ class VisionEngine:
                     classification_started_at - request.timestamp,
                 )
                 if parsed is None:
-                    continue
+                    parsed = {
+                        "tier": 3,
+                        "behavior_pattern": "taking_item",
+                        "confidence": 0.6,
+                        "scene": "the camera view",
+                        "suspect_description": "person near the package",
+                        "one_line_summary": "Person removed a package from the monitored zone",
+                        "time_elapsed": f"{classification_started_at - request.timestamp:.2f}s",
+                    }
+                else:
+                    # Theft decision is YOLO+temporal only. Qwen enriches text,
+                    # but must never downgrade/escalate the theft tier.
+                    parsed = {
+                        "tier": 3,
+                        "behavior_pattern": "taking_item",
+                        "confidence": float(parsed.get("confidence", 0.6)),
+                        "scene": str(parsed.get("scene", "the camera view")),
+                        "suspect_description": str(
+                            parsed.get("suspect_description", "person near the package")
+                        ),
+                        "one_line_summary": str(
+                            parsed.get(
+                                "one_line_summary",
+                                "Person removed a package from the monitored zone",
+                            )
+                        ),
+                        "time_elapsed": str(
+                            parsed.get(
+                                "time_elapsed",
+                                f"{classification_started_at - request.timestamp:.2f}s",
+                            )
+                        ),
+                    }
 
                 event = build_event(
                     classification=parsed,
@@ -1343,9 +1871,8 @@ class VisionEngine:
                     timestamp=request.timestamp,
                     incident_id=self._incident_id_for_emit(request.timestamp),
                 )
-                self._attach_clip(event)
                 self._update_last_classification(event)
-                print(json.dumps(event, ensure_ascii=True))
+                _print_pretty_event(event)
                 self._publish_event(event)
             except Exception:
                 log.exception("Background Qwen classification failed.")
@@ -1363,9 +1890,51 @@ class VisionEngine:
             pass
         self.worker_thread.join(timeout=1.0)
 
+    def _stop_background_workers(self) -> None:
+        self._stop_queue_worker(self.publisher_thread, self.publish_queue)
+        self._stop_queue_worker(self.artifact_thread, self.artifact_queue)
+
+    @staticmethod
+    def _stop_queue_worker(
+        worker: threading.Thread | None,
+        worker_queue: queue.Queue[Any],
+    ) -> None:
+        if worker is None:
+            return
+        try:
+            worker_queue.put_nowait(None)
+        except queue.Full:
+            try:
+                worker_queue.get_nowait()
+                worker_queue.task_done()
+                worker_queue.put_nowait(None)
+            except Exception:
+                pass
+        worker.join(timeout=1.0)
+
     def _classification_busy(self) -> bool:
         with self.state_lock:
             return self.classification_in_flight
+
+    def _publisher_worker(self) -> None:
+        while True:
+            event = self.publish_queue.get()
+            try:
+                if event is None:
+                    return
+                self._publish_event_sync(event)
+            finally:
+                self.publish_queue.task_done()
+
+    def _artifact_worker(self) -> None:
+        while True:
+            request = self.artifact_queue.get()
+            try:
+                if request is None:
+                    return
+                self._save_artifact_sync(request)
+            finally:
+                self.artifact_queue.task_done()
 
     # ---------------------------------------------------------------------
     # Failure artifacts
@@ -1387,27 +1956,48 @@ class VisionEngine:
         persons: list[Detection],
         carryables: list[Detection],
     ) -> None:
+        if not self.config.save_failure_artifacts:
+            return
+        frame_copy = frame_bgr.copy() if hasattr(frame_bgr, "copy") else frame_bgr
+        request = ArtifactRequest(
+            kind=kind,
+            timestamp=time.time(),
+            frame_seq=self.frame_seq,
+            frame_bgr=frame_copy,
+            decision=decision,
+            persons=list(persons),
+            carryables=list(carryables),
+        )
+        if self.artifact_thread is None:
+            self._save_artifact_sync(request)
+            return
+        try:
+            self.artifact_queue.put_nowait(request)
+        except queue.Full:
+            log.warning("Dropping %s artifact because artifact writer is behind.", kind)
+
+    def _save_artifact_sync(self, request: ArtifactRequest) -> None:
         try:
             dir_path = self._ensure_artifact_dir()
-            ts = time.strftime("%Y%m%d-%H%M%S")
-            stem = f"{ts}_{kind}_{uuid.uuid4().hex[:6]}"
+            ts = time.strftime("%Y%m%d-%H%M%S", time.localtime(request.timestamp))
+            stem = f"{ts}_{request.kind}_{uuid.uuid4().hex[:6]}"
             jpg_path = os.path.join(dir_path, stem + ".jpg")
             meta_path = os.path.join(dir_path, stem + ".json")
-            cv2.imwrite(jpg_path, frame_bgr)
-            cand = decision.candidate
+            cv2.imwrite(jpg_path, request.frame_bgr)
+            cand = request.decision.candidate
             meta = {
-                "kind": kind,
-                "timestamp": time.time(),
-                "frame_seq": self.frame_seq,
-                "state": decision.state,
-                "cues": decision.cues,
-                "suppression_active": decision.suppression_active,
+                "kind": request.kind,
+                "timestamp": request.timestamp,
+                "frame_seq": request.frame_seq,
+                "state": request.decision.state,
+                "cues": request.decision.cues,
+                "suppression_active": request.decision.suppression_active,
                 "persons": [
-                    {"conf": p.confidence, "box": list(p.box)} for p in persons
+                    {"conf": p.confidence, "box": list(p.box)} for p in request.persons
                 ],
                 "carryables": [
                     {"label": c.label, "conf": c.confidence, "box": list(c.box)}
-                    for c in carryables
+                    for c in request.carryables
                 ],
                 "candidate": None
                 if cand is None
@@ -1423,7 +2013,7 @@ class VisionEngine:
             with open(meta_path, "w") as fh:
                 json.dump(meta, fh, indent=2)
         except Exception:
-            log.exception("Failed to save failure artifact (kind=%s)", kind)
+            log.exception("Failed to save failure artifact (kind=%s)", request.kind)
 
     # ---------------------------------------------------------------------
     # Misc
@@ -1483,6 +2073,9 @@ class VisionEngine:
             return False
         return True
 
+    def _should_suppress_duplicate_theft_emit(self) -> bool:
+        return self._active_incident_alert_sent
+
     def _incident_id_for_emit(self, now: float) -> str:
         if self._active_incident_id is None:
             self._active_incident_id = f"inc_{uuid.uuid4().hex[:12]}"
@@ -1537,7 +2130,7 @@ class VisionEngine:
         now: float,
     ) -> None:
         """Throttled log explaining why a frame with a person didn't classify."""
-        if (now - self._last_fire_block_log_at) < 2.0:
+        if (now - self._last_fire_block_log_at) < 10.0:
             return
         self._last_fire_block_log_at = now
         reasons = []
@@ -1573,158 +2166,6 @@ class VisionEngine:
             "; ".join(reasons) or "no specific reason",
         )
 
-    def _attach_clip(self, event: dict[str, Any]) -> None:
-        """Encode the rolling buffer into an MP4 and stamp event['clip_filename'].
-
-        Best-effort: we never block the emit path on encoding errors. If
-        writing fails, downstream just gets evidence-free flow.
-        """
-        if not self.config.clip_writer_enabled:
-            return
-        incident_id = str(event.get("incident_id") or "incident")
-        filename = f"clip_{incident_id}.mp4"
-        out_path = os.path.join(self.config.clip_output_dir, filename)
-        try:
-            written = write_clip(
-                list(self.frame_buffer),
-                out_path,
-                fps=self.config.clip_fps,
-                lookback_seconds=self.config.clip_lookback_seconds,
-            )
-        except Exception:
-            log.exception("Clip writer failed for %s", incident_id)
-            return
-        if written is None:
-            return
-        event["clip_filename"] = filename
-        event["clip_path"] = written.path
-        event["clip_frame_count"] = written.frame_count
-        log.info(
-            "Wrote clip %s (%d frames) for incident %s",
-            written.path,
-            written.frame_count,
-            incident_id,
-        )
-
-    def _is_all_family(
-        self,
-        frame_bgr: Any,
-        persons: list[Detection],
-        now: float,
-    ) -> bool:
-        """Return True iff every person on screen matches a known person.
-
-        Routes through :class:`TrackIdentityResolver` so identity is anchored
-        on the YOLO+ByteTrack track id rather than re-checked from scratch
-        each frame. Falls back to per-frame :class:`FaceFilter` matching only
-        when the resolver is unavailable.
-        """
-        if not persons:
-            return False
-        if self.face_resolver is not None:
-            tracked_persons = [(det.track_id, det.box) for det in persons]
-            try:
-                suppress, verdicts = self.face_resolver.all_known(
-                    frame_bgr, tracked_persons, now=now
-                )
-            except Exception:
-                log.exception("Track-anchored face resolver failed; falling through.")
-                return False
-            self._log_face_verdicts(now, suppress, verdicts)
-            return suppress
-
-        if self.face_filter is None:
-            return False
-        person_boxes = [det.box for det in persons]
-        try:
-            suppress, verdicts = self.face_filter.all_known(
-                frame_bgr, person_boxes, now=now
-            )
-        except Exception:
-            log.exception("Face filter failed; falling through to classification.")
-            return False
-        self._log_face_verdicts(now, suppress, verdicts)
-        return suppress
-
-    def _log_face_verdicts(
-        self,
-        now: float,
-        suppress: bool,
-        verdicts: list[Any],
-    ) -> None:
-        """Throttle log lines so we see what the filter / resolver decided.
-
-        Accepts either ``PersonVerdict`` (legacy filter) or ``TrackVerdict``
-        (resolver) since both expose ``name``, ``similarity``, and ``reason``.
-        """
-        if (now - self._last_face_suppress_log_at) < 1.0:
-            return
-        self._last_face_suppress_log_at = now
-        verdict_summary = "; ".join(
-            f"{(getattr(v, 'name', None) or '?')}"
-            f"(track={getattr(v, 'track_id', None)}, "
-            f"{v.reason}, sim={v.similarity:.2f})"
-            for v in verdicts
-        )
-        if suppress:
-            log.info("Face exclusion SUPPRESSED classification: %s", verdict_summary)
-        else:
-            log.info("Face exclusion did NOT suppress: %s", verdict_summary)
-
-    def _build_body_embedder(self) -> Any:
-        """Lazy-import torchreid wrapper so face_filter_enabled doesn't pay
-        the torchreid import cost when body-ReID is disabled.
-
-        Returns an object with ``embed(crop_bgr) -> np.ndarray`` matching the
-        :class:`track_identity.BodyEmbedder` protocol. Returns None on import
-        failure — body-ReID is a soft dependency.
-        """
-        try:
-            from .reid import ReIDExtractor
-        except Exception:
-            log.exception(
-                "Body-ReID disabled: failed to import torchreid. "
-                "Set FACE_BODY_REID_ENABLED=false to silence this."
-            )
-            return None
-        try:
-            return ReIDExtractor()
-        except Exception:
-            log.exception("Body-ReID disabled: ReIDExtractor failed to load.")
-            return None
-
-    def _emit_family_ambient_event(
-        self,
-        persons: list[Detection],
-        yolo_classes: list[str],
-    ) -> None:
-        """Optionally publish a tier-1 'ambient' event for family activity.
-
-        Useful if the homeowner wants the action router's activity log to
-        record that family was on the porch even though no alert ran.
-        """
-        if not self.config.post_events:
-            return
-        try:
-            event = build_event(
-                classification={
-                    "tier": 1,
-                    "confidence": 1.0,
-                    "behavior_pattern": "other_benign",
-                    "scene": "the camera view",
-                    "suspect_description": "known family member",
-                    "one_line_summary": "family member detected; classification suppressed",
-                    "time_elapsed": "0.00s",
-                },
-                node_id=self.config.node_id,
-                frame_seq=self.frame_seq,
-                yolo_classes=yolo_classes,
-                raw_classifier="face_filter:family_match",
-            )
-            self._publish_event(event)
-        except Exception:
-            log.exception("Failed to emit family ambient event.")
-
     def _update_last_classification(self, event: dict[str, Any]) -> None:
         """Cache the latest Qwen output so the camera overlay can render it."""
         with self.state_lock:
@@ -1741,6 +2182,19 @@ class VisionEngine:
     def _publish_event(self, event: dict[str, Any]) -> None:
         if not self.config.post_events:
             return
+        event_payload = dict(event)
+        if self.publisher_thread is None:
+            self._publish_event_sync(event_payload)
+            return
+        try:
+            self.publish_queue.put_nowait(event_payload)
+        except queue.Full:
+            log.warning(
+                "Dropping event %s because event publisher is behind.",
+                event_payload.get("event_id", "<unknown>"),
+            )
+
+    def _publish_event_sync(self, event: dict[str, Any]) -> None:
         try:
             result = post_event(event, self.config)
         except Exception as exc:
@@ -1749,11 +2203,17 @@ class VisionEngine:
 
         if result.ok:
             self._router_url_warned = False
-            log.info(
-                "Posted event %s to router (%s)",
-                event["event_id"],
-                result.status_code,
-            )
+            try:
+                payload = json.loads(result.body) if result.body else {}
+            except (TypeError, ValueError):
+                payload = {}
+            calls = payload.get("calls") if isinstance(payload, dict) else None
+            if isinstance(calls, list) and calls:
+                first = calls[0] if isinstance(calls[0], dict) else {}
+                _print_pretty_call(
+                    str(first.get("to", "?")),
+                    str(first.get("sid", "?")),
+                )
             return
 
         self._log_router_delivery_issue(result)
@@ -1793,6 +2253,13 @@ class VisionEngine:
         if remaining > 0:
             time.sleep(remaining)
 
+    @staticmethod
+    def _throttle_display_loop(loop_started_at: float) -> None:
+        elapsed = time.time() - loop_started_at
+        remaining = DISPLAY_INTERVAL_SECONDS - elapsed
+        if remaining > 0:
+            time.sleep(remaining)
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -1801,7 +2268,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--source",
         default=CONFIG.camera_source,
-        help="Camera source. Use 0 for the local webcam or an RTSP URL.",
+        help=(
+            "Camera source. Use 0 for the local webcam, an RTSP/HTTP URL, "
+            "or a `phone[:token]` shortcut to consume a paired phone camera "
+            "(e.g. `phone`, `phone:lobby`)."
+        ),
     )
     parser.add_argument(
         "--hide-window",
@@ -1827,26 +2298,44 @@ def _config_with(post_events: bool | None = None) -> Config:
         capture_height=CONFIG.capture_height,
         yolo_model=CONFIG.yolo_model,
         yolo_input_size=CONFIG.yolo_input_size,
+        yolo_input_size_busy=CONFIG.yolo_input_size_busy,
         qwen_model=CONFIG.qwen_model,
         qwen_max_new_tokens=CONFIG.qwen_max_new_tokens,
         qwen_min_pixels=CONFIG.qwen_min_pixels,
         qwen_max_pixels=CONFIG.qwen_max_pixels,
         qwen_frame_max_edge=CONFIG.qwen_frame_max_edge,
         qwen_frame_lookback_seconds=CONFIG.qwen_frame_lookback_seconds,
+        pause_detection_while_classifying=CONFIG.pause_detection_while_classifying,
         classification_cooldown_seconds=CONFIG.classification_cooldown_seconds,
         action_router_url=CONFIG.action_router_url,
         person_confidence=CONFIG.person_confidence,
         carryable_confidence=CONFIG.carryable_confidence,
         post_timeout_seconds=CONFIG.post_timeout_seconds,
         post_events=post_events,
+        event_queue_size=CONFIG.event_queue_size,
         show_window=CONFIG.show_window,
         mock_classifier=CONFIG.mock_classifier,
         debug_overlay=CONFIG.debug_overlay,
         debug_detections=CONFIG.debug_detections,
         save_failure_artifacts=CONFIG.save_failure_artifacts,
         debug_artifact_dir=CONFIG.debug_artifact_dir,
+        artifact_queue_size=CONFIG.artifact_queue_size,
         entry_zone=CONFIG.entry_zone,
+        use_entry_zone=CONFIG.use_entry_zone,
         carryable_labels=CONFIG.carryable_labels,
+        cardboard_box_enable=CONFIG.cardboard_box_enable,
+        cardboard_detector_backend=CONFIG.cardboard_detector_backend,
+        yolo_world_model=CONFIG.yolo_world_model,
+        yolo_world_input_size=CONFIG.yolo_world_input_size,
+        yolo_world_confidence=CONFIG.yolo_world_confidence,
+        yolo_world_cardboard_classes=CONFIG.yolo_world_cardboard_classes,
+        cardboard_box_min_area_ratio=CONFIG.cardboard_box_min_area_ratio,
+        cardboard_box_max_area_ratio=CONFIG.cardboard_box_max_area_ratio,
+        cardboard_box_min_extent=CONFIG.cardboard_box_min_extent,
+        cardboard_box_min_confidence=CONFIG.cardboard_box_min_confidence,
+        cardboard_box_edge_margin_ratio=CONFIG.cardboard_box_edge_margin_ratio,
+        cardboard_box_floor_min_y_ratio=CONFIG.cardboard_box_floor_min_y_ratio,
+        cardboard_box_min_score=CONFIG.cardboard_box_min_score,
         interaction_frames_required=CONFIG.interaction_frames_required,
         min_dwell_seconds=CONFIG.min_dwell_seconds,
         carryable_grace_seconds=CONFIG.carryable_grace_seconds,
@@ -1859,15 +2348,20 @@ def _config_with(post_events: bool | None = None) -> Config:
         scene_clear_seconds=CONFIG.scene_clear_seconds,
         pair_iou_threshold=CONFIG.pair_iou_threshold,
         pair_distance_ratio=CONFIG.pair_distance_ratio,
+        anchor_seconds=CONFIG.anchor_seconds,
+        move_px=CONFIG.move_px,
+        move_iou=CONFIG.move_iou,
+        package_missing_grace_seconds=CONFIG.package_missing_grace_seconds,
+        person_near_package_window_seconds=CONFIG.person_near_package_window_seconds,
+        interaction_window_seconds=CONFIG.interaction_window_seconds,
+        feet_motion_enable=CONFIG.feet_motion_enable,
+        feet_motion_min_area=CONFIG.feet_motion_min_area,
+        theft_cooldown_seconds=CONFIG.theft_cooldown_seconds,
         demo_mode_theft_bias=CONFIG.demo_mode_theft_bias,
         qwen_frames_per_inference=CONFIG.qwen_frames_per_inference,
         demo_fast_path=CONFIG.demo_fast_path,
         demo_fast_path_cooldown_seconds=CONFIG.demo_fast_path_cooldown_seconds,
-        face_filter_enabled=CONFIG.face_filter_enabled,
-        face_db_path=CONFIG.face_db_path,
-        face_similarity_threshold=CONFIG.face_similarity_threshold,
-        face_min_pixels=CONFIG.face_min_pixels,
-        face_emit_ambient_event=CONFIG.face_emit_ambient_event,
+        capture_buffer_drain_grabs=CONFIG.capture_buffer_drain_grabs,
     )
 
 
@@ -1876,8 +2370,19 @@ def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        format=f"{_PRETTY_DIM}%(asctime)s{_PRETTY_RESET} %(message)s",
+        datefmt="%H:%M:%S",
     )
+    for _noisy in (
+        "httpx",
+        "huggingface_hub",
+        "huggingface_hub.utils._http",
+        "urllib3",
+        "transformers",
+        "ultralytics",
+        "filelock",
+    ):
+        logging.getLogger(_noisy).setLevel(logging.WARNING)
     config = _config_with(post_events=False) if args.no_post else CONFIG
 
     engine = VisionEngine(

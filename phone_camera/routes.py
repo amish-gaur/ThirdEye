@@ -220,6 +220,11 @@ def create_phone_camera_router(
                             chunk = slot.latest_jpeg
                         else:
                             continue
+                    while True:
+                        try:
+                            chunk = queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
                     header = (
                         f"--{boundary}\r\n"
                         f"Content-Type: image/jpeg\r\n"

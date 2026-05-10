@@ -25,6 +25,11 @@ data/
 .idea/
 .vscode/
 yolo11n.pt
+yolov8s-world.pt
+*.pt
+
+# Vision-pipeline debug artifacts (frame snapshots + json from emit/near-miss).
+debug_vision/
 
 # Family-face enrollment artifacts (photos + embeddings stay on-device).
 family_faces/

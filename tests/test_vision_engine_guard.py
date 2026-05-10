@@ -7,6 +7,7 @@ from vision_pipeline.config import Config
 from vision_pipeline.engine import (
     BOX_CLASS_IDS,
     BehaviorTracker,
+    BehaviorDecision,
     BufferedFrame,
     CandidateContext,
     ClassificationRequest,
@@ -17,6 +18,7 @@ from vision_pipeline.engine import (
     STATE_SUPPRESSED,
     STATE_WATCHING,
     VisionEngine,
+    _draw_overlay,
 )
 
 
@@ -55,6 +57,19 @@ def _cfg(**overrides):
         debug_artifact_dir="./debug_vision_test",
         entry_zone=ZONE,
         carryable_labels=("backpack", "handbag", "suitcase", "laptop", "cell phone"),
+        cardboard_box_enable=True,
+        cardboard_detector_backend="opencv",
+        yolo_world_model="yolov8s-world.pt",
+        yolo_world_input_size=640,
+        yolo_world_confidence=0.10,
+        yolo_world_cardboard_classes=("cardboard box", "shipping box"),
+        cardboard_box_min_area_ratio=0.006,
+        cardboard_box_max_area_ratio=0.45,
+        cardboard_box_min_extent=0.45,
+        cardboard_box_min_confidence=0.32,
+        cardboard_box_edge_margin_ratio=0.005,
+        cardboard_box_floor_min_y_ratio=0.60,
+        cardboard_box_min_score=0.16,
         interaction_frames_required=4,
         min_dwell_seconds=0.3,
         carryable_grace_seconds=0.6,
@@ -202,6 +217,339 @@ def test_monitored_labels_include_laptop_and_cell_phone_when_model_supports_them
 
     assert 63 in engine._monitored_class_ids
     assert 67 in engine._monitored_class_ids
+
+
+def test_cardboard_box_fallback_detects_package_when_yolo_has_no_box_class(mocker) -> None:
+    import cv2
+    import numpy as np
+
+    mocker.patch("vision_pipeline.engine.require_mps", return_value="mps")
+    yolo_cls = mocker.patch("vision_pipeline.engine.YOLO")
+    yolo_cls.return_value.names = {0: "person", 24: "backpack"}
+
+    yolo_result = mocker.Mock()
+    yolo_result.names = {0: "person", 24: "backpack"}
+    yolo_result.boxes = None
+    yolo_cls.return_value.predict.return_value = [yolo_result]
+
+    engine = VisionEngine(
+        _cfg(mock_classifier=True, carryable_labels=("backpack",)),
+        source=0,
+        show_window=False,
+    )
+
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    frame[:] = (35, 35, 35)
+    cv2.rectangle(frame, (180, 310), (350, 430), (70, 130, 190), -1)
+
+    persons, carryables = engine._detect_persons_and_carryables(frame)
+
+    assert persons == []
+    assert any(det.label == "cardboard box" for det in carryables)
+
+
+def test_cardboard_box_fallback_allows_pale_box_near_frame_bottom(mocker) -> None:
+    import cv2
+    import numpy as np
+
+    mocker.patch("vision_pipeline.engine.require_mps", return_value="mps")
+    yolo_cls = mocker.patch("vision_pipeline.engine.YOLO")
+    yolo_cls.return_value.names = {0: "person", 24: "backpack"}
+
+    yolo_result = mocker.Mock()
+    yolo_result.names = {0: "person", 24: "backpack"}
+    yolo_result.boxes = None
+    yolo_cls.return_value.predict.return_value = [yolo_result]
+
+    engine = VisionEngine(
+        _cfg(mock_classifier=True, carryable_labels=("backpack",)),
+        source=0,
+        show_window=False,
+    )
+
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    frame[:] = (35, 35, 35)
+    cv2.rectangle(frame, (210, 360), (380, 475), (190, 200, 210), -1)
+
+    _, carryables = engine._detect_persons_and_carryables(frame)
+
+    assert any(det.label == "cardboard box" for det in carryables)
+
+
+def test_cardboard_box_fallback_prefers_large_edge_touching_package(mocker) -> None:
+    import cv2
+    import numpy as np
+
+    mocker.patch("vision_pipeline.engine.require_mps", return_value="mps")
+    yolo_cls = mocker.patch("vision_pipeline.engine.YOLO")
+    yolo_cls.return_value.names = {0: "person", 24: "backpack"}
+
+    yolo_result = mocker.Mock()
+    yolo_result.names = {0: "person", 24: "backpack"}
+    yolo_result.boxes = None
+    yolo_cls.return_value.predict.return_value = [yolo_result]
+
+    engine = VisionEngine(
+        _cfg(mock_classifier=True, carryable_labels=("backpack",)),
+        source=0,
+        show_window=False,
+    )
+
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    frame[:] = (35, 35, 35)
+    cv2.rectangle(frame, (0, 260), (360, 470), (170, 195, 215), -1)
+    cv2.rectangle(frame, (510, 330), (560, 390), (130, 150, 175), -1)
+
+    _, carryables = engine._detect_persons_and_carryables(frame)
+
+    cardboard = [det for det in carryables if det.label == "cardboard box"]
+    assert len(cardboard) == 1
+    assert cardboard[0].box[0] == 0.0
+    assert cardboard[0].box[2] > 300.0
+
+
+def test_cardboard_box_fallback_suppresses_person_colored_false_positive(mocker) -> None:
+    import cv2
+    import numpy as np
+
+    mocker.patch("vision_pipeline.engine.require_mps", return_value="mps")
+    yolo_cls = mocker.patch("vision_pipeline.engine.YOLO")
+    yolo_cls.return_value.names = {0: "person", 24: "backpack"}
+
+    yolo_result = mocker.Mock()
+    yolo_result.names = {0: "person", 24: "backpack"}
+    yolo_result.boxes = mocker.Mock()
+    yolo_result.boxes.__len__ = mocker.Mock(return_value=1)
+    yolo_result.boxes.cls.tolist.return_value = [0]
+    yolo_result.boxes.conf.tolist.return_value = [0.80]
+    yolo_result.boxes.xyxy.tolist.return_value = [[410.0, 70.0, 640.0, 460.0]]
+    yolo_cls.return_value.predict.return_value = [yolo_result]
+
+    engine = VisionEngine(
+        _cfg(mock_classifier=True, carryable_labels=("backpack",)),
+        source=0,
+        show_window=False,
+    )
+
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    frame[:] = (35, 35, 35)
+    cv2.rectangle(frame, (90, 335), (230, 475), (170, 195, 215), -1)
+    cv2.rectangle(frame, (455, 190), (625, 405), (170, 195, 215), -1)
+
+    persons, carryables = engine._detect_persons_and_carryables(frame)
+
+    cardboard = [det for det in carryables if det.label == "cardboard box"]
+    assert len(persons) == 1
+    assert len(cardboard) == 1
+    assert cardboard[0].box[0] < 250.0
+
+
+def test_cardboard_box_fallback_allows_partially_occluded_floor_package(mocker) -> None:
+    import cv2
+    import numpy as np
+
+    mocker.patch("vision_pipeline.engine.require_mps", return_value="mps")
+    yolo_cls = mocker.patch("vision_pipeline.engine.YOLO")
+    yolo_cls.return_value.names = {0: "person", 24: "backpack"}
+
+    yolo_result = mocker.Mock()
+    yolo_result.names = {0: "person", 24: "backpack"}
+    yolo_result.boxes = mocker.Mock()
+    yolo_result.boxes.__len__ = mocker.Mock(return_value=1)
+    yolo_result.boxes.cls.tolist.return_value = [0]
+    yolo_result.boxes.conf.tolist.return_value = [0.82]
+    yolo_result.boxes.xyxy.tolist.return_value = [[260.0, 80.0, 610.0, 470.0]]
+    yolo_cls.return_value.predict.return_value = [yolo_result]
+
+    engine = VisionEngine(
+        _cfg(mock_classifier=True, carryable_labels=("backpack",)),
+        source=0,
+        show_window=False,
+    )
+
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    frame[:] = (35, 35, 35)
+    cv2.rectangle(frame, (120, 330), (290, 475), (170, 195, 215), -1)
+    cv2.rectangle(frame, (260, 350), (325, 470), (170, 195, 215), -1)
+    cv2.rectangle(frame, (400, 150), (620, 360), (145, 135, 175), -1)
+
+    _, carryables = engine._detect_persons_and_carryables(frame)
+
+    cardboard = [det for det in carryables if det.label == "cardboard box"]
+    assert len(cardboard) == 1
+    assert cardboard[0].box[0] < 330.0
+    assert cardboard[0].box[1] > 300.0
+
+
+def test_cardboard_box_fallback_rejects_midframe_sleeve_like_candidate(mocker) -> None:
+    import cv2
+    import numpy as np
+
+    mocker.patch("vision_pipeline.engine.require_mps", return_value="mps")
+    yolo_cls = mocker.patch("vision_pipeline.engine.YOLO")
+    yolo_cls.return_value.names = {0: "person", 24: "backpack"}
+
+    yolo_result = mocker.Mock()
+    yolo_result.names = {0: "person", 24: "backpack"}
+    yolo_result.boxes = None
+    yolo_cls.return_value.predict.return_value = [yolo_result]
+
+    engine = VisionEngine(
+        _cfg(mock_classifier=True, carryable_labels=("backpack",)),
+        source=0,
+        show_window=False,
+    )
+
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    frame[:] = (35, 35, 35)
+    cv2.rectangle(frame, (360, 100), (635, 330), (145, 135, 175), -1)
+
+    _, carryables = engine._detect_persons_and_carryables(frame)
+
+    assert not any(det.label == "cardboard box" for det in carryables)
+
+
+def test_yolo_world_cardboard_backend_detects_prompted_box(mocker) -> None:
+    import numpy as np
+
+    mocker.patch("vision_pipeline.engine.require_mps", return_value="mps")
+    yolo_cls = mocker.patch("vision_pipeline.engine.YOLO")
+    yolo_cls.return_value.names = {0: "person", 24: "backpack"}
+    yolo_result = mocker.Mock()
+    yolo_result.names = {0: "person", 24: "backpack"}
+    yolo_result.boxes = None
+    yolo_cls.return_value.predict.return_value = [yolo_result]
+
+    world_cls = mocker.patch("vision_pipeline.engine.YOLOWorld")
+    world_model = world_cls.return_value
+    world_boxes = mocker.Mock()
+    world_boxes.__len__ = mocker.Mock(return_value=1)
+    world_boxes.conf.tolist.return_value = [0.42]
+    world_boxes.xyxy.tolist.return_value = [[210.0, 315.0, 375.0, 455.0]]
+    world_result = mocker.Mock()
+    world_result.boxes = world_boxes
+    world_model.predict.return_value = [world_result]
+
+    engine = VisionEngine(
+        _cfg(
+            mock_classifier=True,
+            carryable_labels=("backpack",),
+            cardboard_detector_backend="yolo_world",
+            yolo_world_cardboard_classes=("cardboard box",),
+        ),
+        source=0,
+        show_window=False,
+    )
+
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    _, carryables = engine._detect_persons_and_carryables(frame)
+
+    world_cls.assert_called_once_with("yolov8s-world.pt")
+    world_model.set_classes.assert_called_once_with(["cardboard box"])
+    world_model.to.assert_called_once_with("mps")
+    assert len(carryables) == 1
+    assert carryables[0].label == "cardboard box"
+    assert carryables[0].box == (210.0, 315.0, 375.0, 455.0)
+
+
+def test_yolo_world_cardboard_backend_returns_only_best_box(mocker) -> None:
+    import numpy as np
+
+    mocker.patch("vision_pipeline.engine.require_mps", return_value="mps")
+    yolo_cls = mocker.patch("vision_pipeline.engine.YOLO")
+    yolo_cls.return_value.names = {0: "person", 24: "backpack"}
+    yolo_result = mocker.Mock()
+    yolo_result.names = {0: "person", 24: "backpack"}
+    yolo_result.boxes = None
+    yolo_cls.return_value.predict.return_value = [yolo_result]
+
+    world_cls = mocker.patch("vision_pipeline.engine.YOLOWorld")
+    world_model = world_cls.return_value
+    world_boxes = mocker.Mock()
+    world_boxes.__len__ = mocker.Mock(return_value=2)
+    world_boxes.conf.tolist.return_value = [0.18, 0.56]
+    world_boxes.xyxy.tolist.return_value = [
+        [30.0, 100.0, 120.0, 220.0],
+        [220.0, 325.0, 390.0, 455.0],
+    ]
+    world_result = mocker.Mock()
+    world_result.boxes = world_boxes
+    world_model.predict.return_value = [world_result]
+
+    engine = VisionEngine(
+        _cfg(
+            mock_classifier=True,
+            carryable_labels=("backpack",),
+            cardboard_detector_backend="yolo_world",
+        ),
+        source=0,
+        show_window=False,
+    )
+
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    _, carryables = engine._detect_persons_and_carryables(frame)
+
+    assert len(carryables) == 1
+    assert carryables[0].confidence == 0.56
+    assert carryables[0].box == (220.0, 325.0, 390.0, 455.0)
+
+
+def test_overlay_draws_current_cardboard_only(mocker) -> None:
+    import numpy as np
+
+    import vision_pipeline.engine as engine_mod
+
+    draw_box = mocker.patch.object(engine_mod, "_draw_box")
+    decision = BehaviorDecision(
+        state=STATE_CANDIDATE,
+        cues=[],
+        should_classify=False,
+        suppression_active=False,
+        last_emitted_at=0.0,
+        candidate=None,
+        person_boxes=[],
+        carryable_boxes=[
+            Detection(
+                cls_id=-100,
+                label="cardboard box",
+                confidence=0.52,
+                box=(260.0, 320.0, 390.0, 450.0),
+            )
+        ],
+        package_anchor_label="cardboard box",
+        package_anchor_box=(0.0, 250.0, 500.0, 480.0),
+    )
+
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    _draw_overlay(frame, config=_cfg(), decision=decision)
+
+    assert draw_box.call_count == 1
+    assert draw_box.call_args.args[1].label == "cardboard box"
+
+
+def test_overlay_does_not_draw_stale_package_anchor(mocker) -> None:
+    import numpy as np
+
+    import vision_pipeline.engine as engine_mod
+
+    draw_box = mocker.patch.object(engine_mod, "_draw_box")
+    decision = BehaviorDecision(
+        state=STATE_CANDIDATE,
+        cues=[],
+        should_classify=False,
+        suppression_active=False,
+        last_emitted_at=0.0,
+        candidate=None,
+        person_boxes=[],
+        carryable_boxes=[],
+        package_anchor_label="cardboard box",
+        package_anchor_box=(0.0, 250.0, 500.0, 480.0),
+    )
+
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    _draw_overlay(frame, config=_cfg(), decision=decision)
+
+    draw_box.assert_not_called()
 
 
 def test_primary_person_prefers_in_zone_detection() -> None:
@@ -780,6 +1128,25 @@ def test_fast_path_stays_suppressed_until_scene_clears(mocker) -> None:
     assert engine._active_incident_id is None
     assert engine._active_incident_alert_sent is False
     assert engine._should_fast_path([_person()], [], 1001.8) is True
+
+
+def test_theft_emit_stays_suppressed_until_scene_clears(mocker) -> None:
+    mocker.patch("vision_pipeline.engine.require_mps", return_value="mps")
+    mocker.patch("vision_pipeline.engine.YOLO")
+
+    engine = VisionEngine(
+        _cfg(mock_classifier=True, scene_clear_seconds=1.0),
+        source=0,
+        show_window=False,
+    )
+
+    engine._mark_incident_emitted(1000.0)
+
+    assert engine._should_suppress_duplicate_theft_emit() is True
+
+    engine._update_active_incident(now=1001.2, has_signal=False)
+
+    assert engine._should_suppress_duplicate_theft_emit() is False
 
 
 # ── NEW: CandidateContext richness ───────────────────────────────────────

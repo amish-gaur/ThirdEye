@@ -77,11 +77,14 @@ class PackageTheftTracker:
         self._pending_box: tuple[float, float, float, float] | None = None
         self._pending_label: str | None = None
         self._pending_since: float = 0.0
+        self._pending_last_seen_at: float = 0.0
 
         self.anchor_box: tuple[float, float, float, float] | None = None
         self.anchor_label: str | None = None
         self.anchor_created_at: float = 0.0
         self.anchor_last_seen_at: float = 0.0
+        self._anchor_last_box: tuple[float, float, float, float] | None = None
+        self._anchor_moved_since_at: float = 0.0
         self.anchor_emitted: bool = False
         self.last_person_near_at: float = 0.0
         self.last_emit_at: float = 0.0
@@ -104,15 +107,21 @@ class PackageTheftTracker:
         else:
             if matched is not None:
                 self.anchor_last_seen_at = now
-                shift = _center_dist(self.anchor_box, matched.box)
-                iou = _box_iou(self.anchor_box, matched.box)
+                reference_box = self.anchor_box
+                shift = _center_dist(reference_box, matched.box)
+                iou = _box_iou(reference_box, matched.box)
                 if shift > self.config.move_px or iou < self.config.move_iou:
+                    if self._anchor_moved_since_at <= 0.0:
+                        self._anchor_moved_since_at = now
                     self.state = STATE_PACKAGE_MOVED_OR_MISSING
                     cues.append("package_moved")
                 else:
+                    self._anchor_moved_since_at = 0.0
                     self.state = STATE_PACKAGE_ANCHORED
-                self.anchor_box = matched.box
+                self._anchor_last_box = matched.box
             elif (now - self.anchor_last_seen_at) > self.config.package_missing_grace_seconds:
+                if self._anchor_moved_since_at <= 0.0:
+                    self._anchor_moved_since_at = now
                 self.state = STATE_PACKAGE_MOVED_OR_MISSING
                 cues.append("package_missing")
 
@@ -145,12 +154,32 @@ class PackageTheftTracker:
                     self.last_emit_at = now
                     cues.append("theft_confirmed")
 
-        if self.anchor_box is not None and matched is None and self.state == STATE_PACKAGE_ANCHORED:
-            if (now - self.anchor_last_seen_at) > max(
+        if self.anchor_box is not None and not should_emit:
+            stale_seconds = now - self.anchor_last_seen_at
+            if matched is None and stale_seconds > max(
                 self.config.package_missing_grace_seconds,
                 self.config.person_near_package_window_seconds,
+                self.config.interaction_window_seconds,
             ):
                 self._clear_anchor()
+            elif self.state == STATE_PACKAGE_MOVED_OR_MISSING:
+                person_stale = (
+                    self.last_person_near_at <= 0.0
+                    or (now - self.last_person_near_at) > self.config.interaction_window_seconds
+                )
+                moved_seconds = (
+                    now - self._anchor_moved_since_at
+                    if self._anchor_moved_since_at > 0.0
+                    else 0.0
+                )
+                if (
+                    person_stale
+                    and matched is not None
+                    and moved_seconds > self.config.interaction_window_seconds
+                ):
+                    self._set_anchor(now, matched)
+                elif person_stale and stale_seconds > self.config.interaction_window_seconds:
+                    self._clear_anchor()
 
         return TheftDecision(
             state=self.state,
@@ -162,9 +191,14 @@ class PackageTheftTracker:
 
     def _maybe_build_anchor(self, now: float, package_dets: list[PackageDetection]) -> None:
         if not package_dets:
-            self._pending_box = None
-            self._pending_label = None
-            self._pending_since = 0.0
+            if (
+                self._pending_box is not None
+                and (now - self._pending_last_seen_at)
+                <= self.config.package_missing_grace_seconds
+            ):
+                self.state = STATE_IDLE
+                return
+            self._clear_pending()
             self.state = STATE_IDLE
             return
 
@@ -173,6 +207,7 @@ class PackageTheftTracker:
             self._pending_box = strongest.box
             self._pending_label = strongest.label
             self._pending_since = now
+            self._pending_last_seen_at = now
             self.state = STATE_IDLE
             return
 
@@ -181,21 +216,19 @@ class PackageTheftTracker:
             self._pending_box = strongest.box
             self._pending_label = strongest.label
             self._pending_since = now
+            self._pending_last_seen_at = now
             self.state = STATE_IDLE
             return
 
+        self._pending_last_seen_at = now
         if (now - self._pending_since) >= self.config.anchor_seconds:
-            self.anchor_box = strongest.box
-            self.anchor_label = strongest.label
-            self.anchor_created_at = now
-            self.anchor_last_seen_at = now
-            self.anchor_emitted = False
-            self.state = STATE_PACKAGE_ANCHORED
+            self._set_anchor(now, strongest)
 
     def _match_anchor(self, package_dets: list[PackageDetection]) -> PackageDetection | None:
         if self.anchor_box is None or not package_dets:
             return None
-        return min(package_dets, key=lambda d: _center_dist(self.anchor_box, d.box))
+        match_box = self._anchor_last_box or self.anchor_box
+        return min(package_dets, key=lambda d: _center_dist(match_box, d.box))
 
     def _person_near_anchor(self, person_boxes: list[tuple[float, float, float, float]]) -> bool:
         if self.anchor_box is None or not person_boxes:
@@ -215,6 +248,26 @@ class PackageTheftTracker:
         self.anchor_label = None
         self.anchor_created_at = 0.0
         self.anchor_last_seen_at = 0.0
+        self._anchor_last_box = None
+        self._anchor_moved_since_at = 0.0
         self.anchor_emitted = False
         self.last_person_near_at = 0.0
+        self._clear_pending()
         self.state = STATE_IDLE
+
+    def _set_anchor(self, now: float, det: PackageDetection) -> None:
+        self.anchor_box = det.box
+        self.anchor_label = det.label
+        self.anchor_created_at = now
+        self.anchor_last_seen_at = now
+        self._anchor_last_box = det.box
+        self._anchor_moved_since_at = 0.0
+        self.anchor_emitted = False
+        self._clear_pending()
+        self.state = STATE_PACKAGE_ANCHORED
+
+    def _clear_pending(self) -> None:
+        self._pending_box = None
+        self._pending_label = None
+        self._pending_since = 0.0
+        self._pending_last_seen_at = 0.0
