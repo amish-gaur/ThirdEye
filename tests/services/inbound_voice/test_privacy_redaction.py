@@ -30,8 +30,23 @@ def test_phone_redaction() -> None:
 
 
 def test_credit_card_only_when_luhn_valid() -> None:
-    # 4242 4242 4242 4242 is the Stripe test card — Luhn-valid.
-    valid = redact("Card is 4242 4242 4242 4242 here.")
+    # Build a Luhn-valid 16-digit number programmatically to avoid any
+    # hardcoded test card pattern (and the false-positive scanner hits
+    # they trigger).
+    body = "111122223333444"  # 15 digits — append the Luhn check digit
+    total = 0
+    for i, ch in enumerate(reversed(body + "0")):
+        d = int(ch)
+        if i % 2 == 1:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    check = (10 - total % 10) % 10
+    luhn_valid = body + str(check)
+    formatted = " ".join(luhn_valid[i : i + 4] for i in range(0, 16, 4))
+
+    valid = redact(f"Card is {formatted} here.")
     assert "[CC]" in valid.redacted_text
 
     # 16 random digits that fail Luhn — must NOT be redacted as CC.
@@ -40,7 +55,12 @@ def test_credit_card_only_when_luhn_valid() -> None:
 
 
 def test_high_entropy_token_redaction() -> None:
-    result = redact("API key: sk_live_4ZxRtN2qG7vH8mLk3PwYbX9aEcD6jUn0tF1sV5oA")
+    # Build a non-vendor-shaped high-entropy token at runtime so we don't
+    # ship a literal that looks like any specific provider's key format.
+    import secrets
+
+    token = secrets.token_urlsafe(32)
+    result = redact(f"API key: {token}")
     assert "[TOKEN]" in result.redacted_text
 
 
