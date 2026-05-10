@@ -48,3 +48,6 @@ dist/
 build/
 .pnpm-store/
 .claude/
+
+# Isolated face-id demo gallery (per-user enrollment, not for the repo)
+face_demo/
