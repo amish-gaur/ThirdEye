@@ -77,9 +77,6 @@ class Config:
     capture_height: int = _int("CAPTURE_HEIGHT", 480)
     yolo_model: str = os.getenv("YOLO_MODEL", "yolo11n.pt")
     yolo_input_size: int = _int("YOLO_INPUT_SIZE", 640)
-    # When Qwen classification is in-flight on MPS, reduce YOLO imgsz to keep
-    # the preview loop responsive. 0/negative disables the busy-size override.
-    yolo_input_size_busy: int = _int("YOLO_INPUT_SIZE_BUSY", 512)
     qwen_model: str = os.getenv("QWEN_MODEL", "Qwen/Qwen2-VL-2B-Instruct")
     qwen_max_new_tokens: int = _int("QWEN_MAX_NEW_TOKENS", 96)
     qwen_min_pixels: int = _int("QWEN_MIN_PIXELS", 256 * 28 * 28)
@@ -108,8 +105,6 @@ class Config:
     entry_zone: tuple[float, float, float, float] = _zone(
         "ENTRY_ZONE", (0.10, 0.20, 0.90, 0.95)
     )
-    # If false, ignore entry-zone gating and use full-frame logic.
-    use_entry_zone: bool = _bool("USE_ENTRY_ZONE", False)
 
     # Carryable label set
     carryable_labels: tuple[str, ...] = _label_set(
@@ -141,11 +136,6 @@ class Config:
     # model can see motion (punching, grabbing, fleeing). 1 = single-frame.
     qwen_frames_per_inference: int = _int("QWEN_FRAMES_PER_INFERENCE", 3)
     qwen_frame_lookback_seconds: float = _float("QWEN_FRAME_LOOKBACK_SECONDS", 1.2)
-    # To keep UI smooth on Apple Silicon, pause YOLO passes while a Qwen
-    # classification is running on MPS.
-    pause_detection_while_classifying: bool = _bool(
-        "PAUSE_DETECTION_WHILE_CLASSIFYING", True
-    )
 
     # Demo fast-path: classify on any person sighting if the behavior tracker
     # hasn't fired in N seconds. Trades some precision for reliability so demos
@@ -155,23 +145,12 @@ class Config:
         "DEMO_FAST_PATH_COOLDOWN_SECONDS", 6.0
     )
 
-    # Package-theft temporal state machine knobs
-    anchor_seconds: float = _float("ANCHOR_SECONDS", 0.8)
-    move_px: float = _float("MOVE_PX", 36.0)
-    move_iou: float = _float("MOVE_IOU", 0.35)
-    package_missing_grace_seconds: float = _float(
-        "PACKAGE_MISSING_GRACE_SECONDS", 0.8
-    )
-    person_near_package_window_seconds: float = _float(
-        "PERSON_NEAR_PACKAGE_WINDOW_SECONDS", 2.0
-    )
-    interaction_window_seconds: float = _float("INTERACTION_WINDOW_SECONDS", 2.2)
-    feet_motion_enable: bool = _bool("FEET_MOTION_ENABLE", True)
-    feet_motion_min_area: float = _float("FEET_MOTION_MIN_AREA", 1800.0)
-    theft_cooldown_seconds: float = _float("THEFT_COOLDOWN_SECONDS", 8.0)
-    # Drop buffered camera frames before decode to reduce display latency when
-    # inference gets briefly overloaded.
-    capture_buffer_drain_grabs: int = _int("CAPTURE_BUFFER_DRAIN_GRABS", 2)
+    # Where to drop encoded MP4 clips on theft emit. Should match the action
+    # router's MEDIA_DIR so the router can serve them via /media/<filename>.
+    clip_output_dir: str = _str("CLIP_OUTPUT_DIR", "./media")
+    clip_lookback_seconds: float = _float("CLIP_LOOKBACK_SECONDS", 8.0)
+    clip_fps: int = _int("CLIP_FPS", 10)
+    clip_writer_enabled: bool = _bool("CLIP_WRITER_ENABLED", True)
 
 
 CONFIG = Config()

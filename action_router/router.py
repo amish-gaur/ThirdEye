@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional
 from .config import CONFIG, Config
 from .messaging import SmsResult, send_sms
 from .narration import generate_script
+from .return_flow import ReturnFlowResult, maybe_initiate_return
 from .tts import synthesize_mp3
 from .voice import CallResult, place_call_play, place_call_say
 
@@ -61,6 +62,7 @@ class ActionResult:
     messages: List[SmsResult] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
     duplicate: bool = False
+    return_flow: Optional[ReturnFlowResult] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -77,6 +79,7 @@ class ActionResult:
                 {"to": m.to, "sid": m.sid, "dry_run": m.dry_run} for m in self.messages
             ],
             "errors": self.errors,
+            "return_flow": self.return_flow.to_dict() if self.return_flow else None,
         }
 
 
@@ -124,12 +127,41 @@ def execute_action(event_json: Dict[str, Any], config: Optional[Config] = None) 
     if tier == 2:
         return _tier_notice(event_json, cfg, result)
     if tier == 3:
-        return _tier_alert(event_json, cfg, result)
+        _tier_alert(event_json, cfg, result)
+        _maybe_run_return_flow(event_json, cfg, result)
+        return result
     if tier == 4:
-        return _tier_emergency(event_json, cfg, result)
+        _tier_emergency(event_json, cfg, result)
+        _maybe_run_return_flow(event_json, cfg, result)
+        return result
 
     result.errors.append(f"unknown tier: {tier}")
     return result
+
+
+# Behavior patterns where a stolen package is plausible. Prevents filing a
+# return when the alert was, e.g., a person collapsed on the porch.
+RETURNABLE_BEHAVIOR_PATTERNS = {"taking_item", "opening_container"}
+
+
+def _maybe_run_return_flow(
+    event: Dict[str, Any], cfg: Config, result: ActionResult
+) -> None:
+    if not cfg.return_flow_enabled:
+        return
+    pattern = str(event.get("behavior_pattern") or "").strip().lower()
+    if pattern not in RETURNABLE_BEHAVIOR_PATTERNS:
+        result.actions.append(f"return_flow_skipped_pattern:{pattern or 'none'}")
+        return
+    try:
+        flow = maybe_initiate_return(event, config=cfg)
+    except Exception as exc:
+        log.exception("return_flow raised")
+        result.errors.append(f"return_flow: {exc}")
+        return
+    result.return_flow = flow
+    result.actions.extend(flow.actions)
+    result.errors.extend(flow.errors)
 
 
 def _safe_confidence(value: Any) -> float:
