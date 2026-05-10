@@ -14,6 +14,7 @@ python-dotenv>=1.0
 requests>=2.32
 websockets>=12.0   # phone-camera WebSocket ingest (used by FastAPI/uvicorn)
 qrcode>=7.4        # QR pairing UI (renders PNGs via Pillow)
+zeroconf>=0.131    # mDNS LAN camera discovery + safewatch_sensor announce
 
 # Vision pipeline
 opencv-python>=4.10

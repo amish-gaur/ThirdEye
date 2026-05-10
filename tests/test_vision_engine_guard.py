@@ -310,11 +310,7 @@ def test_tiny_edge_person_outside_zone_is_ignored(mocker) -> None:
     yolo_cls.return_value.names = {0: "person"}
 
     engine = VisionEngine(
-        _cfg(
-            mock_classifier=True,
-            use_entry_zone=True,
-            entry_zone=(0.2, 0.2, 0.8, 0.8),
-        ),
+        _cfg(mock_classifier=True, entry_zone=(0.2, 0.2, 0.8, 0.8)),
         source=0,
         show_window=False,
     )

@@ -31,21 +31,14 @@ from PIL import Image
 from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
 from ultralytics import YOLO
 
+from .clip_writer import write_clip
 from .config import CONFIG, Config
 from .events import VISION_LANGUAGE_PROMPT, build_event, evaluate_classifier_output
-from .publisher import post_event
-from .theft_tracker import (
-    PackageDetection,
-    PackageTheftTracker,
-    STATE_IDLE as THEFT_STATE_IDLE,
-    TheftDecision,
-)
+from .publisher import post_event, post_ready_signal
 
 FRAME_BUFFER_MAXLEN = 150
 TARGET_FPS = 10
 FRAME_INTERVAL_SECONDS = 1.0 / TARGET_FPS
-DISPLAY_FPS = 30
-DISPLAY_INTERVAL_SECONDS = 1.0 / DISPLAY_FPS
 PERSON_CLASS_ID = 0
 BOX_CLASS_IDS = (24, 26, 28)  # backpack, handbag, suitcase
 TRIGGER_CLASS_IDS = (PERSON_CLASS_ID,) + BOX_CLASS_IDS
@@ -181,16 +174,10 @@ def frame_to_pil(frame_bgr: Any) -> Image.Image:
 
 
 def parse_capture_source(raw_source: str) -> int | str:
-    """Resolve a CAMERA_SOURCE string into a `cv2.VideoCapture` argument.
-
-    Delegates to `vision_pipeline.source_resolver` so the same logic can be
-    unit-tested without touching any heavy imports. Supports the new
-    `phone://` shortcuts (paired phone camera streamed via the action
-    router's MJPEG endpoint) on top of the existing OpenCV inputs.
-    """
-    from .source_resolver import resolve_camera_source
-
-    return resolve_camera_source(raw_source)
+    raw_source = raw_source.strip()
+    if raw_source.isdigit():
+        return int(raw_source)
+    return raw_source
 
 
 def _box_center(box: tuple[float, float, float, float]) -> tuple[float, float]:
@@ -616,17 +603,16 @@ def _draw_overlay(
     last_classification: "LastClassification | None" = None,
 ) -> None:
     h, w = frame_bgr.shape[:2]
-    if config.use_entry_zone:
-        zone = config.entry_zone
-        x1, y1, x2, y2 = (
-            int(zone[0] * w),
-            int(zone[1] * h),
-            int(zone[2] * w),
-            int(zone[3] * h),
-        )
-        cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), (0, 200, 255), 2)
-        cv2.putText(frame_bgr, "ENTRY ZONE", (x1 + 4, y1 + 18),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1, cv2.LINE_AA)
+    zone = config.entry_zone
+    x1, y1, x2, y2 = (
+        int(zone[0] * w),
+        int(zone[1] * h),
+        int(zone[2] * w),
+        int(zone[3] * h),
+    )
+    cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), (0, 200, 255), 2)
+    cv2.putText(frame_bgr, "ENTRY ZONE", (x1 + 4, y1 + 18),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1, cv2.LINE_AA)
 
     candidate = decision.candidate
     cand_person_box = candidate.last_person_box if candidate else None
@@ -726,20 +712,6 @@ def _draw_box(frame_bgr: Any, det: Detection, *, color: tuple[int, int, int], th
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
 
 
-def _empty_decision() -> BehaviorDecision:
-    return BehaviorDecision(
-        state=STATE_IDLE,
-        cues=[],
-        should_classify=False,
-        suppression_active=False,
-        last_emitted_at=0.0,
-        candidate=None,
-        person_boxes=[],
-        carryable_boxes=[],
-        near_miss=False,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Vision Engine
 # ---------------------------------------------------------------------------
@@ -759,18 +731,7 @@ class VisionEngine:
         self.classification_in_flight = False
         self.state_lock = threading.Lock()
         self.worker_thread: threading.Thread | None = None
-        self.capture_thread: threading.Thread | None = None
-        self.processing_thread: threading.Thread | None = None
-        self.run_event = threading.Event()
-        self.capture_lock = threading.Lock()
-        self.latest_capture_frame: Any | None = None
-        self.latest_capture_at: float = 0.0
-        self.last_processed_capture_at: float = 0.0
-        self.decision_lock = threading.Lock()
-        self.latest_decision: BehaviorDecision = _empty_decision()
         self.behavior = BehaviorTracker(config)
-        self.theft_tracker = PackageTheftTracker(config)
-        self._prev_motion_gray: Any | None = None
         self._artifact_dir_ensured = False
         # Demo-mode flag driving carryable label set
         self._carryable_label_set: set[str] = {
@@ -848,59 +809,158 @@ class VisionEngine:
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.capture_width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.capture_height)
 
+        # Tell the action router this engine is fully warmed up. Best-effort:
+        # standalone runs (no router) silently no-op. The router uses this to
+        # flip our /api/cameras entry from "warming" to "running" so demo
+        # flows don't fire theft triggers into a still-loading Qwen process.
+        if self.config.post_events:
+            post_ready_signal(self.config)
+
         if self.show_window:
             print("Vision engine running. Press 'q' in the preview window to quit.")
         else:
             print("Vision engine running without a preview window. Use Ctrl+C to quit.")
 
-        self.run_event.set()
-        self.capture_thread = threading.Thread(
-            target=self._capture_worker,
-            args=(cap,),
-            name="camera-capture",
-            daemon=True,
-        )
-        self.capture_thread.start()
-        self.processing_thread = threading.Thread(
-            target=self._processing_worker,
-            name="vision-processing",
-            daemon=True,
-        )
-        self.processing_thread.start()
-
         try:
-            while self.run_event.is_set():
+            while True:
                 loop_started_at = time.time()
-                frame, _ = self._get_latest_capture_frame()
-                if frame is None:
-                    self._throttle_display_loop(loop_started_at)
+
+                ok, frame = cap.read()
+                if not ok:
+                    log.warning("Webcam / stream frame grab failed; retrying.")
+                    self._throttle_loop(loop_started_at)
                     continue
 
+                self.frame_seq += 1
+                captured_at = time.time()
+                self.frame_buffer.append(
+                    BufferedFrame(timestamp=captured_at, frame_bgr=frame.copy())
+                )
+
+                fh, fw = frame.shape[:2]
+                persons, carryables = self._detect_persons_and_carryables(frame)
+                self._update_active_incident(
+                    now=captured_at,
+                    has_signal=bool(persons or carryables),
+                )
+
+                decision = self.behavior.update(
+                    now=captured_at,
+                    person_dets=persons,
+                    carryable_dets=carryables,
+                    frame_size=(fw, fh),
+                )
+
+                if self.config.debug_detections:
+                    log.info(
+                        "frame=%d state=%s cues=%s persons=%s carryables=%s",
+                        self.frame_seq,
+                        decision.state,
+                        decision.cues,
+                        [(d.label, round(d.confidence, 2)) for d in persons],
+                        [(d.label, round(d.confidence, 2)) for d in carryables],
+                    )
+
+                # Demo fast-path: if no fire in N seconds AND we see a person
+                # right now, classify anyway. Means a punch / theft caught
+                # outside the entry zone still triggers a call.
+                fast_path = self._should_fast_path(persons, carryables, captured_at)
+                should_fire = decision.should_classify or fast_path
+
+                if not should_fire and persons:
+                    self._log_fire_block(
+                        decision=decision,
+                        persons=persons,
+                        carryables=carryables,
+                        now=captured_at,
+                    )
+
+                if should_fire:
+                    yolo_classes = sorted(
+                        {d.label for d in persons} | {d.label for d in carryables}
+                    ) or ["person"]
+                    if fast_path and not decision.should_classify:
+                        log.info(
+                            "Fast-path firing: %s with %s",
+                            [d.label for d in persons],
+                            [d.label for d in carryables] or "no carryable",
+                        )
+                    elif decision.candidate and decision.candidate.last_carryable_label:
+                        log.info(
+                            "Candidate firing: carryable=%s frames=%d dwell=%.2fs",
+                            decision.candidate.last_carryable_label,
+                            decision.candidate.interaction_frames,
+                            decision.candidate.recent_zone_dwell,
+                        )
+                    latest_frame = self.frame_buffer[-1]
+
+                    if self.config.mock_classifier:
+                        parsed, raw = self._classify_with_qwen([frame], 0.0)
+                        if parsed:
+                            event = build_event(
+                                classification=parsed,
+                                node_id=self.config.node_id,
+                                frame_seq=self.frame_seq,
+                                yolo_classes=yolo_classes,
+                                raw_classifier=raw,
+                                incident_id=self._incident_id_for_emit(captured_at),
+                            )
+                            self._attach_clip(event)
+                            self._update_last_classification(event)
+                            print(json.dumps(event, ensure_ascii=True))
+                            self._publish_event(event)
+                        fired = True
+                        self._mark_incident_emitted(captured_at)
+                        self._last_fire_at = captured_at
+                    else:
+                        # Multi-frame: pass the most recent N frames so Qwen
+                        # can see motion (a swing, a grab, a fall).
+                        recent = self._collect_recent_frames(self.config.qwen_frames_per_inference)
+                        request = ClassificationRequest(
+                            timestamp=latest_frame.timestamp,
+                            frame_seq=self.frame_seq,
+                            frame_bgr=latest_frame.frame_bgr.copy(),
+                            yolo_classes=yolo_classes,
+                            extra_frames=recent[:-1],  # historical context
+                        )
+                        fired = self._submit_classification(request)
+                        if fired:
+                            self._mark_incident_emitted(captured_at)
+                            self._last_fire_at = captured_at
+
+                    if self.config.save_failure_artifacts:
+                        self._save_artifact(
+                            kind="emit" if fired else "emit_dropped",
+                            frame_bgr=latest_frame.frame_bgr,
+                            decision=decision,
+                            persons=persons,
+                            carryables=carryables,
+                        )
+                elif decision.near_miss and self.config.save_failure_artifacts:
+                    self._save_artifact(
+                        kind="near_miss",
+                        frame_bgr=frame,
+                        decision=decision,
+                        persons=persons,
+                        carryables=carryables,
+                    )
+
                 if self.show_window:
-                    display = frame.copy()
                     if self.config.debug_overlay:
-                        with self.decision_lock:
-                            decision = self.latest_decision
                         with self.state_lock:
                             last_cls = self.last_classification
                         _draw_overlay(
-                            display,
+                            frame,
                             config=self.config,
                             decision=decision,
                             last_classification=last_cls,
                         )
-                    cv2.imshow("ThirdEye Vision Engine", display)
+                    cv2.imshow("ThirdEye Vision Engine", frame)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
-                        self.run_event.clear()
                         break
 
-                self._throttle_display_loop(loop_started_at)
+                self._throttle_loop(loop_started_at)
         finally:
-            self.run_event.clear()
-            if self.capture_thread is not None:
-                self.capture_thread.join(timeout=1.0)
-            if self.processing_thread is not None:
-                self.processing_thread.join(timeout=1.0)
             cap.release()
             if self.show_window:
                 cv2.destroyAllWindows()
@@ -910,180 +970,14 @@ class VisionEngine:
     # Detection helpers
     # ---------------------------------------------------------------------
 
-    def _capture_worker(self, cap: Any) -> None:
-        while self.run_event.is_set():
-            ok, frame = self._read_latest_frame(cap)
-            if not ok:
-                time.sleep(0.01)
-                continue
-            with self.capture_lock:
-                self.latest_capture_frame = frame
-                self.latest_capture_at = time.time()
-
-    def _get_latest_capture_frame(self) -> tuple[Any | None, float]:
-        with self.capture_lock:
-            if self.latest_capture_frame is None:
-                return None, 0.0
-            return self.latest_capture_frame.copy(), self.latest_capture_at
-
-    def _processing_worker(self) -> None:
-        while self.run_event.is_set():
-            loop_started_at = time.time()
-            frame, captured_at = self._get_latest_capture_frame()
-            if frame is None or captured_at <= self.last_processed_capture_at:
-                self._throttle_loop(loop_started_at)
-                continue
-            if self.config.pause_detection_while_classifying and self._classification_busy():
-                # Avoid YOLO+Qwen contention on MPS; capture/display continues
-                # independently so the preview remains responsive.
-                self._throttle_loop(loop_started_at)
-                continue
-            self.last_processed_capture_at = captured_at
-
-            self.frame_seq += 1
-            self.frame_buffer.append(
-                BufferedFrame(timestamp=captured_at, frame_bgr=frame.copy())
-            )
-
-            _fh, _fw = frame.shape[:2]
-            persons, carryables = self._detect_persons_and_carryables(frame)
-            self._update_active_incident(
-                now=captured_at,
-                has_signal=bool(persons or carryables),
-            )
-            person_boxes = [d.box for d in persons]
-            package_dets = [
-                PackageDetection(label=d.label, confidence=d.confidence, box=d.box)
-                for d in carryables
-            ]
-            feet_motion = self._detect_feet_motion_in_entry_zone(frame)
-            theft_decision = self.theft_tracker.update(
-                now=captured_at,
-                person_boxes=person_boxes,
-                package_dets=package_dets,
-                feet_motion_present=feet_motion,
-            )
-            decision = self._behavior_from_theft(theft_decision, persons, carryables)
-            with self.decision_lock:
-                self.latest_decision = decision
-
-            if self.config.debug_detections:
-                log.info(
-                    "frame=%d state=%s cues=%s persons=%s carryables=%s",
-                    self.frame_seq,
-                    decision.state,
-                    decision.cues,
-                    [(d.label, round(d.confidence, 2)) for d in persons],
-                    [(d.label, round(d.confidence, 2)) for d in carryables],
-                )
-
-            should_fire = theft_decision.should_emit
-
-            if not should_fire and persons:
-                self._log_fire_block(
-                    decision=decision,
-                    persons=persons,
-                    carryables=carryables,
-                    now=captured_at,
-                )
-
-            if should_fire:
-                yolo_classes = sorted(
-                    {d.label for d in persons} | {d.label for d in carryables}
-                ) or ["person"]
-                log.info(
-                    "Theft confirmed: state=%s package=%s cues=%s",
-                    theft_decision.state,
-                    theft_decision.anchor_label,
-                    theft_decision.cues,
-                )
-                latest_frame = self.frame_buffer[-1]
-
-                if self.config.mock_classifier:
-                    parsed, raw = self._classify_with_qwen([frame], 0.0)
-                    if parsed is None:
-                        parsed = {
-                            "tier": 3,
-                            "behavior_pattern": "taking_item",
-                            "confidence": 0.6,
-                            "scene": "the camera view",
-                            "suspect_description": "person near the package",
-                            "one_line_summary": "Person removed a package from the monitored zone",
-                            "time_elapsed": "0.00s",
-                        }
-                    else:
-                        parsed = {
-                            "tier": 3,
-                            "behavior_pattern": "taking_item",
-                            "confidence": float(parsed.get("confidence", 0.6)),
-                            "scene": str(parsed.get("scene", "the camera view")),
-                            "suspect_description": str(
-                                parsed.get("suspect_description", "person near the package")
-                            ),
-                            "one_line_summary": str(
-                                parsed.get(
-                                    "one_line_summary",
-                                    "Person removed a package from the monitored zone",
-                                )
-                            ),
-                            "time_elapsed": str(parsed.get("time_elapsed", "0.00s")),
-                        }
-                    event = build_event(
-                        classification=parsed,
-                        node_id=self.config.node_id,
-                        frame_seq=self.frame_seq,
-                        yolo_classes=yolo_classes,
-                        raw_classifier=raw,
-                        incident_id=self._incident_id_for_emit(captured_at),
-                    )
-                    self._update_last_classification(event)
-                    print(json.dumps(event, ensure_ascii=True))
-                    self._publish_event(event)
-                    fired = True
-                    self._mark_incident_emitted(captured_at)
-                    self._last_fire_at = captured_at
-                else:
-                    recent = self._collect_recent_frames(self.config.qwen_frames_per_inference)
-                    request = ClassificationRequest(
-                        timestamp=latest_frame.timestamp,
-                        frame_seq=self.frame_seq,
-                        frame_bgr=latest_frame.frame_bgr.copy(),
-                        yolo_classes=yolo_classes,
-                        extra_frames=recent[:-1],
-                    )
-                    fired = self._submit_classification(request)
-                    if fired:
-                        self._mark_incident_emitted(captured_at)
-                        self._last_fire_at = captured_at
-
-                if self.config.save_failure_artifacts:
-                    self._save_artifact(
-                        kind="emit" if fired else "emit_dropped",
-                        frame_bgr=latest_frame.frame_bgr,
-                        decision=decision,
-                        persons=persons,
-                        carryables=carryables,
-                    )
-            elif decision.near_miss and self.config.save_failure_artifacts:
-                self._save_artifact(
-                    kind="near_miss",
-                    frame_bgr=frame,
-                    decision=decision,
-                    persons=persons,
-                    carryables=carryables,
-                )
-
-            self._throttle_loop(loop_started_at)
-
     def _detected_classes(self, frame_bgr: Any) -> list[str]:
         """Legacy entry-point kept for tests + simple callers."""
-        imgsz = self._active_yolo_input_size()
         results = self.yolo.predict(
             source=frame_bgr,
             classes=self._monitored_class_ids,
             conf=min(self.config.person_confidence, self.config.carryable_confidence),
             device=self.device,
-            imgsz=imgsz,
+            imgsz=self.config.yolo_input_size,
             verbose=False,
         )
         if not results:
@@ -1102,13 +996,12 @@ class VisionEngine:
     ) -> tuple[list[Detection], list[Detection]]:
         """Run YOLO once at the lower threshold and post-filter per class."""
         lower_conf = min(self.config.person_confidence, self.config.carryable_confidence)
-        imgsz = self._active_yolo_input_size()
         results = self.yolo.predict(
             source=frame_bgr,
             classes=self._monitored_class_ids,
             conf=lower_conf,
             device=self.device,
-            imgsz=imgsz,
+            imgsz=self.config.yolo_input_size,
             verbose=False,
         )
         if not results:
@@ -1148,95 +1041,6 @@ class VisionEngine:
                     carryables.append(det)
         return persons, carryables
 
-    def _active_yolo_input_size(self) -> int:
-        """Pick YOLO inference size based on current engine load.
-
-        Qwen and YOLO both run on MPS in this project. When Qwen generation is
-        in-flight, shrinking YOLO imgsz helps preserve preview smoothness.
-        """
-        base = max(64, int(self.config.yolo_input_size))
-        busy = int(self.config.yolo_input_size_busy)
-        if busy <= 0:
-            return base
-        if self._classification_busy():
-            return max(64, min(base, busy))
-        return base
-
-    def _read_latest_frame(self, cap: Any) -> tuple[bool, Any]:
-        """Read the freshest camera frame, dropping stale buffered frames.
-
-        On some OpenCV backends (especially network/MJPEG streams), CAP_PROP_BUFFERSIZE
-        is ignored and `read()` can lag behind real time under load. Grabbing a
-        couple of queued frames before decoding keeps UI latency lower.
-        """
-        drain_count = max(0, int(self.config.capture_buffer_drain_grabs))
-        if drain_count <= 0:
-            return cap.read()
-
-        grabbed = 0
-        for _ in range(drain_count):
-            if not cap.grab():
-                break
-            grabbed += 1
-        if grabbed > 0:
-            ok, frame = cap.retrieve()
-            if ok:
-                return ok, frame
-        return cap.read()
-
-    def _behavior_from_theft(
-        self,
-        theft_decision: TheftDecision,
-        persons: list[Detection],
-        carryables: list[Detection],
-    ) -> BehaviorDecision:
-        return BehaviorDecision(
-            state=theft_decision.state,
-            cues=list(theft_decision.cues),
-            should_classify=theft_decision.should_emit,
-            suppression_active=False,
-            last_emitted_at=self.theft_tracker.last_emit_at,
-            candidate=None,
-            person_boxes=persons,
-            carryable_boxes=carryables,
-            near_miss=False,
-        )
-
-    def _detect_feet_motion_in_entry_zone(self, frame_bgr: Any) -> bool:
-        if not self.config.feet_motion_enable:
-            return False
-        if not hasattr(frame_bgr, "shape") or len(frame_bgr.shape) < 2:
-            return False
-
-        h, w = frame_bgr.shape[:2]
-        if self.config.use_entry_zone:
-            x1 = int(self.config.entry_zone[0] * w)
-            y1 = int(self.config.entry_zone[1] * h)
-            x2 = int(self.config.entry_zone[2] * w)
-            y2 = int(self.config.entry_zone[3] * h)
-        else:
-            x1, y1, x2, y2 = (0, 0, w, h)
-        y_start = max(y1, int(h * 0.55))
-        if x2 <= x1 or y2 <= y_start:
-            return False
-
-        roi = frame_bgr[y_start:y2, x1:x2]
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (5, 5), 0)
-        if self._prev_motion_gray is None:
-            self._prev_motion_gray = gray
-            return False
-
-        diff = cv2.absdiff(self._prev_motion_gray, gray)
-        self._prev_motion_gray = gray
-        _, mask = cv2.threshold(diff, 20, 255, cv2.THRESH_BINARY)
-        mask = cv2.dilate(mask, None, iterations=2)
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        total_area = 0.0
-        for c in contours:
-            total_area += cv2.contourArea(c)
-        return total_area >= float(self.config.feet_motion_min_area)
-
     def _allow_person_detection(
         self,
         det: Detection,
@@ -1246,11 +1050,7 @@ class VisionEngine:
     ) -> bool:
         if det.confidence < self.config.person_confidence:
             return False
-        in_zone = (
-            _point_in_zone(_box_center(det.box), self.config.entry_zone, frame_size)
-            if self.config.use_entry_zone
-            else True
-        )
+        in_zone = _point_in_zone(_box_center(det.box), self.config.entry_zone, frame_size)
         if in_zone:
             return True
         area_ratio = _box_area(det.box) / max(frame_area, 1.0)
@@ -1275,9 +1075,7 @@ class VisionEngine:
         )
         if det.confidence < min_conf:
             return False
-        if self.config.use_entry_zone and not _point_in_zone(
-            _box_center(det.box), self.config.entry_zone, frame_size
-        ):
+        if not _point_in_zone(_box_center(det.box), self.config.entry_zone, frame_size):
             return False
         if _touches_frame_edge(det.box, frame_size, self.config.edge_margin_ratio):
             return False
@@ -1416,39 +1214,7 @@ class VisionEngine:
                     classification_started_at - request.timestamp,
                 )
                 if parsed is None:
-                    parsed = {
-                        "tier": 3,
-                        "behavior_pattern": "taking_item",
-                        "confidence": 0.6,
-                        "scene": "the camera view",
-                        "suspect_description": "person near the package",
-                        "one_line_summary": "Person removed a package from the monitored zone",
-                        "time_elapsed": f"{classification_started_at - request.timestamp:.2f}s",
-                    }
-                else:
-                    # Theft decision is YOLO+temporal only. Qwen enriches text,
-                    # but must never downgrade/escalate the theft tier.
-                    parsed = {
-                        "tier": 3,
-                        "behavior_pattern": "taking_item",
-                        "confidence": float(parsed.get("confidence", 0.6)),
-                        "scene": str(parsed.get("scene", "the camera view")),
-                        "suspect_description": str(
-                            parsed.get("suspect_description", "person near the package")
-                        ),
-                        "one_line_summary": str(
-                            parsed.get(
-                                "one_line_summary",
-                                "Person removed a package from the monitored zone",
-                            )
-                        ),
-                        "time_elapsed": str(
-                            parsed.get(
-                                "time_elapsed",
-                                f"{classification_started_at - request.timestamp:.2f}s",
-                            )
-                        ),
-                    }
+                    continue
 
                 event = build_event(
                     classification=parsed,
@@ -1459,6 +1225,7 @@ class VisionEngine:
                     timestamp=request.timestamp,
                     incident_id=self._incident_id_for_emit(request.timestamp),
                 )
+                self._attach_clip(event)
                 self._update_last_classification(event)
                 print(json.dumps(event, ensure_ascii=True))
                 self._publish_event(event)
@@ -1688,6 +1455,39 @@ class VisionEngine:
             "; ".join(reasons) or "no specific reason",
         )
 
+    def _attach_clip(self, event: dict[str, Any]) -> None:
+        """Encode the rolling buffer into an MP4 and stamp event['clip_filename'].
+
+        Best-effort: we never block the emit path on encoding errors. If
+        writing fails, downstream just gets evidence-free flow.
+        """
+        if not self.config.clip_writer_enabled:
+            return
+        incident_id = str(event.get("incident_id") or "incident")
+        filename = f"clip_{incident_id}.mp4"
+        out_path = os.path.join(self.config.clip_output_dir, filename)
+        try:
+            written = write_clip(
+                list(self.frame_buffer),
+                out_path,
+                fps=self.config.clip_fps,
+                lookback_seconds=self.config.clip_lookback_seconds,
+            )
+        except Exception:
+            log.exception("Clip writer failed for %s", incident_id)
+            return
+        if written is None:
+            return
+        event["clip_filename"] = filename
+        event["clip_path"] = written.path
+        event["clip_frame_count"] = written.frame_count
+        log.info(
+            "Wrote clip %s (%d frames) for incident %s",
+            written.path,
+            written.frame_count,
+            incident_id,
+        )
+
     def _update_last_classification(self, event: dict[str, Any]) -> None:
         """Cache the latest Qwen output so the camera overlay can render it."""
         with self.state_lock:
@@ -1756,13 +1556,6 @@ class VisionEngine:
         if remaining > 0:
             time.sleep(remaining)
 
-    @staticmethod
-    def _throttle_display_loop(loop_started_at: float) -> None:
-        elapsed = time.time() - loop_started_at
-        remaining = DISPLAY_INTERVAL_SECONDS - elapsed
-        if remaining > 0:
-            time.sleep(remaining)
-
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -1771,11 +1564,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--source",
         default=CONFIG.camera_source,
-        help=(
-            "Camera source. Use 0 for the local webcam, an RTSP/HTTP URL, "
-            "or a `phone[:token]` shortcut to consume a paired phone camera "
-            "(e.g. `phone`, `phone:lobby`)."
-        ),
+        help="Camera source. Use 0 for the local webcam or an RTSP URL.",
     )
     parser.add_argument(
         "--hide-window",
@@ -1801,14 +1590,12 @@ def _config_with(post_events: bool | None = None) -> Config:
         capture_height=CONFIG.capture_height,
         yolo_model=CONFIG.yolo_model,
         yolo_input_size=CONFIG.yolo_input_size,
-            yolo_input_size_busy=CONFIG.yolo_input_size_busy,
         qwen_model=CONFIG.qwen_model,
         qwen_max_new_tokens=CONFIG.qwen_max_new_tokens,
         qwen_min_pixels=CONFIG.qwen_min_pixels,
         qwen_max_pixels=CONFIG.qwen_max_pixels,
         qwen_frame_max_edge=CONFIG.qwen_frame_max_edge,
         qwen_frame_lookback_seconds=CONFIG.qwen_frame_lookback_seconds,
-        pause_detection_while_classifying=CONFIG.pause_detection_while_classifying,
         classification_cooldown_seconds=CONFIG.classification_cooldown_seconds,
         action_router_url=CONFIG.action_router_url,
         person_confidence=CONFIG.person_confidence,
@@ -1822,7 +1609,6 @@ def _config_with(post_events: bool | None = None) -> Config:
         save_failure_artifacts=CONFIG.save_failure_artifacts,
         debug_artifact_dir=CONFIG.debug_artifact_dir,
         entry_zone=CONFIG.entry_zone,
-        use_entry_zone=CONFIG.use_entry_zone,
         carryable_labels=CONFIG.carryable_labels,
         interaction_frames_required=CONFIG.interaction_frames_required,
         min_dwell_seconds=CONFIG.min_dwell_seconds,
@@ -1836,20 +1622,10 @@ def _config_with(post_events: bool | None = None) -> Config:
         scene_clear_seconds=CONFIG.scene_clear_seconds,
         pair_iou_threshold=CONFIG.pair_iou_threshold,
         pair_distance_ratio=CONFIG.pair_distance_ratio,
-        anchor_seconds=CONFIG.anchor_seconds,
-        move_px=CONFIG.move_px,
-        move_iou=CONFIG.move_iou,
-        package_missing_grace_seconds=CONFIG.package_missing_grace_seconds,
-        person_near_package_window_seconds=CONFIG.person_near_package_window_seconds,
-        interaction_window_seconds=CONFIG.interaction_window_seconds,
-        feet_motion_enable=CONFIG.feet_motion_enable,
-        feet_motion_min_area=CONFIG.feet_motion_min_area,
-        theft_cooldown_seconds=CONFIG.theft_cooldown_seconds,
         demo_mode_theft_bias=CONFIG.demo_mode_theft_bias,
         qwen_frames_per_inference=CONFIG.qwen_frames_per_inference,
         demo_fast_path=CONFIG.demo_fast_path,
         demo_fast_path_cooldown_seconds=CONFIG.demo_fast_path_cooldown_seconds,
-            capture_buffer_drain_grabs=CONFIG.capture_buffer_drain_grabs,
     )
 
 
