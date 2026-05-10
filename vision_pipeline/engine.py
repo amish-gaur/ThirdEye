@@ -636,60 +636,32 @@ def _draw_overlay(
     last_classification: "LastClassification | None" = None,
 ) -> None:
     h, w = frame_bgr.shape[:2]
-    if config.use_entry_zone:
-        zone = config.entry_zone
-        x1, y1, x2, y2 = (
-            int(zone[0] * w),
-            int(zone[1] * h),
-            int(zone[2] * w),
-            int(zone[3] * h),
-        )
-        cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), (0, 200, 255), 2)
-        cv2.putText(frame_bgr, "ENTRY ZONE", (x1 + 4, y1 + 18),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1, cv2.LINE_AA)
-
     candidate = decision.candidate
     cand_person_box = candidate.last_person_box if candidate else None
     cand_carryable_box = candidate.last_carryable_box if candidate else None
 
+    def _rect(box, color, thickness):
+        x1, y1, x2, y2 = (int(round(v)) for v in box)
+        x1 = min(max(0, x1), max(0, w - 1))
+        x2 = min(max(0, x2), max(0, w - 1))
+        y1 = min(max(0, y1), max(0, h - 1))
+        y2 = min(max(0, y2), max(0, h - 1))
+        if x2 <= x1 or y2 <= y1:
+            return
+        cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), color, thickness)
+
     for det in decision.person_boxes:
         is_candidate = cand_person_box is not None and _box_iou(det.box, cand_person_box) > 0.3
-        thickness = 3 if is_candidate else 2
-        _draw_box(frame_bgr, det, color=(0, 255, 0), thickness=thickness)
+        _rect(det.box, (0, 255, 0), 3 if is_candidate else 2)
 
     for det in decision.carryable_boxes:
         is_candidate = cand_carryable_box is not None and _box_iou(det.box, cand_carryable_box) > 0.3
-        thickness = 3 if is_candidate else 2
         color = (
             _CARDBOARD_BOX_COLOR
             if det.label.strip().lower() == "cardboard box"
             else _CARRYABLE_BOX_COLOR
         )
-        _draw_box(frame_bgr, det, color=color, thickness=thickness)
-
-    # Top-left status text
-    lines = [
-        f"state: {decision.state}",
-        f"cues : {', '.join(decision.cues) if decision.cues else '-'}",
-        f"suppress: {'ON' if decision.suppression_active else 'off'}"
-        + (f"  demo_bias=ON" if config.demo_mode_theft_bias else ""),
-        f"last_emit: {('%.1fs ago' % (time.time() - decision.last_emitted_at)) if decision.last_emitted_at else 'never'}",
-    ]
-    if candidate is not None:
-        lines.append(
-            f"cand: frames={candidate.interaction_frames} dwell={candidate.recent_zone_dwell:.2f}s carry={candidate.last_carryable_label}"
-        )
-    y = 22
-    for line in lines:
-        cv2.putText(frame_bgr, line, (10, y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3, cv2.LINE_AA)
-        cv2.putText(frame_bgr, line, (10, y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (240, 240, 240), 1, cv2.LINE_AA)
-        y += 22
-
-    # Bottom panel: live Qwen description so you SEE what the model thinks of you.
-    if last_classification is not None and last_classification.is_set:
-        _draw_qwen_panel(frame_bgr, last_classification)
+        _rect(det.box, color, 3 if is_candidate else 2)
 
 
 def _draw_qwen_panel(frame_bgr: Any, cls: "LastClassification") -> None:
@@ -739,6 +711,59 @@ def _truncate_for_overlay(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     return text[: max(0, max_chars - 1)] + "\u2026"
+
+
+# ANSI helpers — milestone events render as styled banners in the terminal.
+_PRETTY_RESET = "\033[0m"
+_PRETTY_BOLD = "\033[1m"
+_PRETTY_DIM = "\033[2m"
+_PRETTY_RED = "\033[91m"
+_PRETTY_GREEN = "\033[92m"
+_PRETTY_YELLOW = "\033[93m"
+_PRETTY_CYAN = "\033[96m"
+
+_PRETTY_TIER = {
+    1: (_PRETTY_DIM, "AMBIENT"),
+    2: (_PRETTY_CYAN, "NOTICE"),
+    3: (_PRETTY_YELLOW, "ALERT"),
+    4: (_PRETTY_RED, "EMERGENCY"),
+}
+
+_PRETTY_BAR = "━" * 60
+
+
+def _print_pretty_event(event: dict[str, Any]) -> None:
+    tier = int(event.get("tier", 1))
+    color, name = _PRETTY_TIER.get(tier, (_PRETTY_RESET, "UNKNOWN"))
+    pattern = event.get("behavior_pattern") or "-"
+    confidence = float(event.get("confidence") or 0.0)
+    summary = event.get("one_line_summary") or "-"
+    desc = event.get("suspect_description") or "-"
+    scene = event.get("scene") or "-"
+    print()
+    print(f"{color}{_PRETTY_BOLD}{_PRETTY_BAR}{_PRETTY_RESET}")
+    print(
+        f"{color}{_PRETTY_BOLD}  ▶ QWEN  T{tier} {name}{_PRETTY_RESET}"
+        f"  conf {confidence:.2f}  pattern {pattern}"
+    )
+    print(f"  {_PRETTY_DIM}scene{_PRETTY_RESET}  {scene}")
+    print(f"  {_PRETTY_DIM}desc {_PRETTY_RESET}  {desc}")
+    print(f"  {_PRETTY_DIM}what {_PRETTY_RESET}  {summary}")
+    print(f"{color}{_PRETTY_BOLD}{_PRETTY_BAR}{_PRETTY_RESET}")
+
+
+def _print_pretty_theft(state: str, package: str | None, cues: list[str]) -> None:
+    pkg = package or "?"
+    cue_str = ", ".join(cues) if cues else "-"
+    print()
+    print(f"{_PRETTY_RED}{_PRETTY_BOLD}{_PRETTY_BAR}{_PRETTY_RESET}")
+    print(f"{_PRETTY_RED}{_PRETTY_BOLD}  ▶ THEFT CONFIRMED  package={pkg}{_PRETTY_RESET}")
+    print(f"  {_PRETTY_DIM}cues{_PRETTY_RESET}   {cue_str}")
+    print(f"{_PRETTY_RED}{_PRETTY_BOLD}{_PRETTY_BAR}{_PRETTY_RESET}")
+
+
+def _print_pretty_call(to: str, sid: str) -> None:
+    print(f"{_PRETTY_GREEN}{_PRETTY_BOLD}  ✓ CALL PLACED{_PRETTY_RESET}  to={to}  sid={sid}")
 
 
 def _draw_box(frame_bgr: Any, det: Detection, *, color: tuple[int, int, int], thickness: int) -> None:
@@ -884,25 +909,17 @@ class VisionEngine:
                 daemon=True,
             )
             self.artifact_thread.start()
-        log.info(
-            "Vision engine ready device=%s source=%r yolo=%s qwen=%s capture=%sx%s "
-            "person_conf=%s carryable_conf=%s zone=%s cardboard=%s demo_bias=%s mock=%s post=%s overlay=%s artifacts=%s",
-            self.device,
-            self.source,
-            self.config.yolo_model,
-            self.config.qwen_model,
-            self.config.capture_width,
-            self.config.capture_height,
-            self.config.person_confidence,
-            self.config.carryable_confidence,
-            self.config.entry_zone,
-            self._cardboard_backend_active,
-            self.config.demo_mode_theft_bias,
-            self.config.mock_classifier,
-            self.config.post_events,
-            self.config.debug_overlay,
-            self.config.save_failure_artifacts,
-        )
+        print()
+        print(f"{_PRETTY_GREEN}{_PRETTY_BOLD}{_PRETTY_BAR}{_PRETTY_RESET}")
+        print(f"{_PRETTY_GREEN}{_PRETTY_BOLD}  ✓ ThirdEye vision engine ready{_PRETTY_RESET}")
+        print(f"  {_PRETTY_DIM}device  {_PRETTY_RESET} {self.device}")
+        print(f"  {_PRETTY_DIM}yolo    {_PRETTY_RESET} {self.config.yolo_model}")
+        print(f"  {_PRETTY_DIM}qwen    {_PRETTY_RESET} {self.config.qwen_model}")
+        print(f"  {_PRETTY_DIM}cardbrd {_PRETTY_RESET} {self._cardboard_backend_active}")
+        print(f"  {_PRETTY_DIM}capture {_PRETTY_RESET} {self.config.capture_width}x{self.config.capture_height}")
+        print(f"  {_PRETTY_DIM}router  {_PRETTY_RESET} {'on' if self.config.post_events else 'off'}")
+        print(f"{_PRETTY_GREEN}{_PRETTY_BOLD}{_PRETTY_BAR}{_PRETTY_RESET}")
+        print()
 
     @staticmethod
     def _normalize_cardboard_backend(raw: str) -> str:
@@ -1115,11 +1132,10 @@ class VisionEngine:
                 yolo_classes = sorted(
                     {d.label for d in persons} | {d.label for d in carryables}
                 ) or ["person"]
-                log.info(
-                    "Theft confirmed: state=%s package=%s cues=%s",
+                _print_pretty_theft(
                     theft_decision.state,
                     theft_decision.anchor_label,
-                    theft_decision.cues,
+                    list(theft_decision.cues),
                 )
                 latest_frame = self.frame_buffer[-1]
 
@@ -1161,7 +1177,7 @@ class VisionEngine:
                         incident_id=self._incident_id_for_emit(captured_at),
                     )
                     self._update_last_classification(event)
-                    print(json.dumps(event, ensure_ascii=True))
+                    _print_pretty_event(event)
                     self._publish_event(event)
                     fired = True
                     self._mark_incident_emitted(captured_at)
@@ -1856,7 +1872,7 @@ class VisionEngine:
                     incident_id=self._incident_id_for_emit(request.timestamp),
                 )
                 self._update_last_classification(event)
-                print(json.dumps(event, ensure_ascii=True))
+                _print_pretty_event(event)
                 self._publish_event(event)
             except Exception:
                 log.exception("Background Qwen classification failed.")
@@ -2114,7 +2130,7 @@ class VisionEngine:
         now: float,
     ) -> None:
         """Throttled log explaining why a frame with a person didn't classify."""
-        if (now - self._last_fire_block_log_at) < 2.0:
+        if (now - self._last_fire_block_log_at) < 10.0:
             return
         self._last_fire_block_log_at = now
         reasons = []
@@ -2187,11 +2203,17 @@ class VisionEngine:
 
         if result.ok:
             self._router_url_warned = False
-            log.info(
-                "Posted event %s to router (%s)",
-                event["event_id"],
-                result.status_code,
-            )
+            try:
+                payload = json.loads(result.body) if result.body else {}
+            except (TypeError, ValueError):
+                payload = {}
+            calls = payload.get("calls") if isinstance(payload, dict) else None
+            if isinstance(calls, list) and calls:
+                first = calls[0] if isinstance(calls[0], dict) else {}
+                _print_pretty_call(
+                    str(first.get("to", "?")),
+                    str(first.get("sid", "?")),
+                )
             return
 
         self._log_router_delivery_issue(result)
@@ -2348,8 +2370,19 @@ def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        format=f"{_PRETTY_DIM}%(asctime)s{_PRETTY_RESET} %(message)s",
+        datefmt="%H:%M:%S",
     )
+    for _noisy in (
+        "httpx",
+        "huggingface_hub",
+        "huggingface_hub.utils._http",
+        "urllib3",
+        "transformers",
+        "ultralytics",
+        "filelock",
+    ):
+        logging.getLogger(_noisy).setLevel(logging.WARNING)
     config = _config_with(post_events=False) if args.no_post else CONFIG
 
     engine = VisionEngine(
