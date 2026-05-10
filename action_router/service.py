@@ -4,14 +4,17 @@ and iMessage to fetch."""
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import re
 import uuid
-from typing import Any, Dict
+from typing import Any, Dict, List
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import disambiguate, return_log
@@ -25,8 +28,36 @@ from .twiml import say_response
 log = logging.getLogger("action_router.service")
 
 
+# In-process pub/sub for SSE event stream. Each connected UI client gets its
+# own bounded asyncio.Queue; the /event handler fans out to all of them. The
+# bound caps memory if a client stalls — old events drop rather than back up.
+_event_subscribers: List[asyncio.Queue] = []
+_subscribers_lock = asyncio.Lock()
+
+
+async def _broadcast_event(payload: Dict[str, Any]) -> None:
+    async with _subscribers_lock:
+        targets = list(_event_subscribers)
+    for q in targets:
+        try:
+            q.put_nowait(payload)
+        except asyncio.QueueFull:
+            log.warning("SSE subscriber queue full; dropping event")
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="SafeWatch Action Router")
+
+    # Permissive CORS so the figma-ui dev server (vite on localhost:3000+) and
+    # any LAN client can hit the API directly. Tighten if this ever ships
+    # outside the demo box.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     media_dir = CONFIG.ensure_media_dir()
     app.mount("/media", StaticFiles(directory=str(media_dir)), name="media")
@@ -101,7 +132,47 @@ def create_app() -> FastAPI:
             payload.get("one_line_summary"),
         )
         result = execute_action(payload)
-        return JSONResponse(result.to_dict())
+        result_dict = result.to_dict()
+        # Fan out to UI subscribers. Merge raw event + router decision so the
+        # UI gets tier/summary/node plus action outcomes in one shape.
+        await _broadcast_event({"event": payload, "result": result_dict})
+        return JSONResponse(result_dict)
+
+    @app.get("/events/stream")
+    async def events_stream(request: Request) -> StreamingResponse:
+        """SSE feed of every event POSTed to /event. The UI subscribes via
+        EventSource and renders each message as an incident row."""
+        queue: asyncio.Queue = asyncio.Queue(maxsize=128)
+        async with _subscribers_lock:
+            _event_subscribers.append(queue)
+
+        async def gen():
+            try:
+                # Initial comment so EventSource fires `open` immediately.
+                yield ": connected\n\n"
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    try:
+                        item = await asyncio.wait_for(queue.get(), timeout=15.0)
+                        yield f"data: {json.dumps(item)}\n\n"
+                    except asyncio.TimeoutError:
+                        # Keepalive comment — keeps proxies from closing idle.
+                        yield ": keepalive\n\n"
+            finally:
+                async with _subscribers_lock:
+                    if queue in _event_subscribers:
+                        _event_subscribers.remove(queue)
+
+        return StreamingResponse(
+            gen(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
 
     @app.post("/voice/alert-response")
     async def receive_alert_response(request: Request) -> Response:

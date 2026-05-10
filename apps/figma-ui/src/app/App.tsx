@@ -18,6 +18,65 @@ import { RobberWaiting } from "./components/RobberWaiting";
 import { AmbientBg } from "./components/AmbientBg";
 import { CornerCamera } from "./components/CornerCamera";
 import { WaterTower } from "./components/WaterTower";
+import { CameraTile } from "./components/CameraTile";
+import {
+  BACKEND_URL,
+  fetchCameras,
+  formatTime,
+  statusFromEntry,
+  tierFromName,
+  type CameraEntry,
+  type StreamMessage,
+} from "./lib/api";
+
+type IncidentRowData = { tier: Tier; title: string; node: string; time: string };
+
+function useIncidentStream(): IncidentRowData[] {
+  const [items, setItems] = useState<IncidentRowData[]>([]);
+  useEffect(() => {
+    const es = new EventSource(`${BACKEND_URL}/events/stream`);
+    es.onmessage = (msg) => {
+      try {
+        const parsed: StreamMessage = JSON.parse(msg.data);
+        const ev = parsed.event ?? {};
+        if (parsed.result?.duplicate) return;
+        const row: IncidentRowData = {
+          // Router may downgrade tier (confidence floor, behavior ceiling) — trust its label.
+          tier: tierFromName(parsed.result?.tier_label ?? ev.tier_name),
+          title: ev.one_line_summary ?? ev.suspect_description ?? "(no summary)",
+          node: `${ev.node_id ?? "NODE-?"}${ev.scene ? ` · ${ev.scene.toUpperCase()}` : ""}`,
+          time: formatTime(ev.timestamp),
+        };
+        setItems((prev) => [row, ...prev].slice(0, 50));
+      } catch {
+        // ignore malformed frames
+      }
+    };
+    es.onerror = () => {
+      // EventSource auto-reconnects; nothing to do.
+    };
+    return () => es.close();
+  }, []);
+  return items;
+}
+
+function useCameras(): CameraEntry[] {
+  const [cams, setCams] = useState<CameraEntry[]>([]);
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      const list = await fetchCameras();
+      if (alive) setCams(list);
+    };
+    tick();
+    const id = setInterval(tick, 5000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
+  return cams;
+}
 
 function NodeRow({
   id,
@@ -76,15 +135,6 @@ const NAV = [
   { id: "settings", label: "Settings", icon: Settings },
 ];
 
-const INCIDENTS: { tier: Tier; title: string; node: string; time: string }[] = [
-  { tier: "emergency", title: "Sustained motion + raised-voice signature at front porch", node: "NODE-01 · PORCH", time: "00:42" },
-  { tier: "alert", title: "Unknown person lingering near side gate (>90s)", node: "NODE-04 · GATE", time: "02:11" },
-  { tier: "alert", title: "Package removed from doorstep, no delivery scheduled", node: "NODE-01 · PORCH", time: "12:08" },
-  { tier: "notice", title: "Vehicle parked across drive for 6 minutes", node: "NODE-07 · STREET", time: "18:33" },
-  { tier: "notice", title: "Garage motion after 22:00 (resident profile match)", node: "NODE-02 · GARAGE", time: "22:14" },
-  { tier: "ambient", title: "Neighbor cat crossed yard", node: "NODE-03 · YARD", time: "23:01" },
-  { tier: "ambient", title: "Wind-driven foliage motion", node: "NODE-05 · BACK", time: "23:18" },
-];
 
 // Incredibles palette
 const C = {
@@ -292,6 +342,15 @@ function StatusPill() {
 }
 
 function Dashboard() {
+  const incidents = useIncidentStream();
+  const cameras = useCameras();
+  const counts = incidents.reduce(
+    (acc, i) => {
+      acc[i.tier] = (acc[i.tier] ?? 0) + 1;
+      return acc;
+    },
+    {} as Record<Tier, number>,
+  );
   return (
     <div className="grid grid-cols-12 gap-8">
       <section className="col-span-7 relative">
@@ -388,12 +447,20 @@ function Dashboard() {
               className="text-[10px] tracking-[0.2em]"
               style={{ fontFamily: "DM Mono, monospace", color: C.ink }}
             >
-              7 EVENTS · 1 EMERGENCY · 2 ALERTS
+              {incidents.length} EVENTS · {counts.emergency ?? 0} EMERGENCY · {counts.alert ?? 0} ALERTS
             </span>
           </div>
           <div>
-            {INCIDENTS.map((i, idx) => (
-              <IncidentRow key={idx} {...i} delay={0.05 * idx} />
+            {incidents.length === 0 && (
+              <div
+                className="px-5 py-6 text-[11px] tracking-[0.2em]"
+                style={{ fontFamily: "DM Mono, monospace", color: C.deep, opacity: 0.7 }}
+              >
+                AWAITING EVENTS · STREAM CONNECTED
+              </div>
+            )}
+            {incidents.map((i, idx) => (
+              <IncidentRow key={`${i.time}-${idx}`} {...i} delay={0.05 * Math.min(idx, 5)} />
             ))}
           </div>
         </Card>
@@ -405,18 +472,25 @@ function Dashboard() {
             className="text-[11px] tracking-[0.3em] mb-4 flex items-center gap-2"
             style={{ fontFamily: "DM Mono, monospace", color: C.ink }}
           >
-            <Radio size={12} /> NODES · AWAITING BACKEND
+            <Radio size={12} /> NODES · {cameras.length} ACTIVE
           </div>
           <div className="space-y-2">
-            {[
-              ["NODE-01", "PORCH", "alert"],
-              ["NODE-02", "GARAGE", "idle"],
-              ["NODE-04", "GATE", "alert"],
-              ["NODE-05", "BACK", "idle"],
-              ["NODE-07", "STREET", "live"],
-              ["PHONE-A", "THIRD EYE", "live"],
-            ].map(([id, loc, st], i) => (
-              <NodeRow key={id} id={id} loc={loc} status={st as any} delay={0.05 * i} />
+            {cameras.length === 0 && (
+              <div
+                className="px-3 py-2 text-[10px] tracking-[0.2em]"
+                style={{ fontFamily: "DM Mono, monospace", color: C.deep, opacity: 0.7 }}
+              >
+                NO CAMERAS REGISTERED
+              </div>
+            )}
+            {cameras.map((c, i) => (
+              <NodeRow
+                key={c.node_id}
+                id={c.node_id.toUpperCase()}
+                loc={c.name.toUpperCase()}
+                status={statusFromEntry(c.status)}
+                delay={0.05 * i}
+              />
             ))}
           </div>
         </Card>
@@ -466,23 +540,48 @@ function TierLegend() {
 }
 
 function LiveView() {
+  const cameras = useCameras();
   return (
     <div>
       <SectionHeader title="Live View" sub="Streams mount here when nodes connect" />
-      <div className="mt-8" data-live-mount>
-        <RobberWaiting height={420} />
+      <div className="mt-8">
+        {cameras.length === 0 ? (
+          <RobberWaiting height={420} />
+        ) : (
+          <div className="grid grid-cols-2 gap-6">
+            {cameras.map((c, i) => (
+              <CameraTile
+                key={c.node_id}
+                name={`${c.node_id.toUpperCase()} · ${c.name.toUpperCase()}`}
+                status={statusFromEntry(c.status)}
+                streamUrl={c.stream_url}
+                delay={0.05 * i}
+                large
+              />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
 function Timeline() {
+  const incidents = useIncidentStream();
   return (
     <div>
       <SectionHeader title="Timeline" sub="Filter by tier · the last calm minute is what matters" />
       <Card className="mt-6 overflow-hidden">
-        {INCIDENTS.map((i, idx) => (
-          <IncidentRow key={idx} {...i} delay={0.04 * idx} />
+        {incidents.length === 0 && (
+          <div
+            className="px-5 py-6 text-[11px] tracking-[0.2em]"
+            style={{ fontFamily: "DM Mono, monospace", color: C.deep, opacity: 0.7 }}
+          >
+            AWAITING EVENTS · STREAM CONNECTED
+          </div>
+        )}
+        {incidents.map((i, idx) => (
+          <IncidentRow key={`${i.time}-${idx}`} {...i} delay={0.04 * Math.min(idx, 5)} />
         ))}
       </Card>
     </div>

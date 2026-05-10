@@ -11,11 +11,13 @@ export function CameraTile({
   status = "idle",
   delay = 0,
   large = false,
+  streamUrl,
 }: {
   name: string;
   status?: "live" | "idle" | "alert";
   delay?: number;
   large?: boolean;
+  streamUrl?: string;
 }) {
   const INK = "#1a0306";
   const CREAM = "#f4ead8";
@@ -77,9 +79,18 @@ export function CameraTile({
           </span>
         </div>
 
-        {/* feed mount — backend stream goes here */}
+        {/* feed mount — MJPEG renders natively in <img> when streamUrl is set */}
         <div className="flex-1 relative" data-feed-mount={name}>
-          <RobberWaiting height={large ? 280 : 180} />
+          {streamUrl ? (
+            <img
+              src={streamUrl}
+              alt={name}
+              className="absolute inset-0 w-full h-full object-cover"
+              style={{ background: INK }}
+            />
+          ) : (
+            <RobberWaiting height={large ? 280 : 180} />
+          )}
         </div>
       </div>
     </motion.div>
