@@ -15,6 +15,7 @@ from . import disambiguate, return_log
 from .amazon_return_agent import initiate_return
 from .claude_identifier import install as install_claude_identifier
 from .config import CONFIG
+from .discovery_routes import create_discovery_router
 from .router import execute_action
 from .twiml import say_response
 
@@ -34,6 +35,9 @@ def create_app() -> FastAPI:
         install_claude_identifier()
     except Exception:
         log.exception("claude_identifier install failed; falling back to stub")
+
+    # LAN camera discovery (mDNS) + camera-subprocess registry.
+    app.include_router(create_discovery_router())
 
     @app.get("/health")
     def health() -> Dict[str, Any]:

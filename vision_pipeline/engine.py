@@ -34,7 +34,7 @@ from ultralytics import YOLO
 from .clip_writer import write_clip
 from .config import CONFIG, Config
 from .events import VISION_LANGUAGE_PROMPT, build_event, evaluate_classifier_output
-from .publisher import post_event
+from .publisher import post_event, post_ready_signal
 
 FRAME_BUFFER_MAXLEN = 150
 TARGET_FPS = 10
@@ -808,6 +808,13 @@ class VisionEngine:
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.capture_width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.capture_height)
+
+        # Tell the action router this engine is fully warmed up. Best-effort:
+        # standalone runs (no router) silently no-op. The router uses this to
+        # flip our /api/cameras entry from "warming" to "running" so demo
+        # flows don't fire theft triggers into a still-loading Qwen process.
+        if self.config.post_events:
+            post_ready_signal(self.config)
 
         if self.show_window:
             print("Vision engine running. Press 'q' in the preview window to quit.")
