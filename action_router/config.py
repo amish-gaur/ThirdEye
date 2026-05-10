@@ -81,6 +81,25 @@ class Config:
     alert_confidence_floor: float = _float("ALERT_CONFIDENCE_FLOOR", 0.35)
     emergency_confidence_floor: float = _float("EMERGENCY_CONFIDENCE_FLOOR", 0.55)
 
+    # Amazon-return flow.
+    # Auto: confidence >= return_auto_threshold => fire return without asking.
+    # Ask:  confidence >= return_ask_threshold  => SMS candidates to homeowner.
+    # Below ask: send evidence-only SMS, no return attempt.
+    return_flow_enabled: bool = _bool("RETURN_FLOW_ENABLED", True)
+    return_auto_threshold: float = _float("RETURN_AUTO_THRESHOLD", 0.85)
+    return_ask_threshold: float = _float("RETURN_ASK_THRESHOLD", 0.55)
+    return_undo_window_seconds: int = _int("RETURN_UNDO_WINDOW_SECONDS", 60)
+    # Persisted Amazon login state (Playwright storage_state.json). Created once
+    # by an interactive setup flow; reused for every automated return.
+    amazon_storage_state: Path = Path(
+        os.getenv("AMAZON_STORAGE_STATE", "./media/amazon_storage_state.json")
+    )
+    amazon_dry_run: bool = _bool("AMAZON_DRY_RUN", True)
+    amazon_orders_cache: Path = Path(
+        os.getenv("AMAZON_ORDERS_CACHE", "./media/amazon_orders.json")
+    )
+    return_log_path: Path = Path(os.getenv("RETURN_LOG_PATH", "./media/return_log.jsonl"))
+
     def elevenlabs_play_enabled(self) -> bool:
         """True only when MP3 <Play> can actually work (key + Twilio-reachable base URL)."""
         if not self.use_elevenlabs:

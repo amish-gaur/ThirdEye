@@ -145,5 +145,12 @@ class Config:
         "DEMO_FAST_PATH_COOLDOWN_SECONDS", 6.0
     )
 
+    # Where to drop encoded MP4 clips on theft emit. Should match the action
+    # router's MEDIA_DIR so the router can serve them via /media/<filename>.
+    clip_output_dir: str = _str("CLIP_OUTPUT_DIR", "./media")
+    clip_lookback_seconds: float = _float("CLIP_LOOKBACK_SECONDS", 8.0)
+    clip_fps: int = _int("CLIP_FPS", 10)
+    clip_writer_enabled: bool = _bool("CLIP_WRITER_ENABLED", True)
+
 
 CONFIG = Config()
