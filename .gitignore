@@ -22,3 +22,6 @@ events.jsonl
 .idea/
 .vscode/
 yolo11n.pt
+node_modules
+.next/
+dist/
