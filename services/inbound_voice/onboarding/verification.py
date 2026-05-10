@@ -183,4 +183,10 @@ def check_verification(
         resource_type="phone",
         resource_id=phone,
     )
+    if ok:
+        # Record in the verified-phone directory so inbound caller-ID
+        # resolution finds this homeowner.
+        from .. import phones
+
+        phones.record_verified(homeowner_id=homeowner_id, phone=phone)
     return ok
