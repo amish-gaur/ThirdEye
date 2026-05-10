@@ -147,6 +147,38 @@ class CandidateContext:
 
 
 @dataclass
+@dataclass
+class _IdentityAnchor:
+    """Sticky-by-position identity tag.
+
+    Once the face filter recognizes a known person at high confidence and we
+    see that recognition sustained for ANCHOR_CONFIRM_SECONDS, we set this
+    anchor on the YOLO bounding box. From that moment on, while ANY person
+    box overlaps the anchor's last-known position by IoU >= ANCHOR_IOU,
+    that box inherits the anchor's identity — even if the face turns away
+    (`face_too_small` / `no_face`). The anchor expires when no person box
+    has overlapped it for ANCHOR_EXPIRE_SECONDS, i.e. the subject has left
+    the frame entirely. This is what fixes the "Aditya turns to pick up the
+    box and the alert fires anyway" failure mode.
+    """
+    name: str
+    box: tuple[float, float, float, float]
+    first_seen_at: float
+    last_seen_at: float
+    last_known_seen_at: float
+    confirmed: bool = False
+
+
+# Identity-anchor tuning. These are deliberately not in config.py because
+# they shape demo-critical behavior — easier to find and tweak inline.
+_ANCHOR_HIGH_CONF = 0.45             # similarity to seed an anchor
+_ANCHOR_CONFIRM_SECONDS = 0.5        # sustained detection before anchor goes "live"
+_ANCHOR_INHERIT_WINDOW_SECONDS = 6.0 # how long a face can be hidden and still inherit
+_ANCHOR_EXPIRE_SECONDS = 8.0         # no person-box overlap this long => drop anchor
+_ANCHOR_IOU = 0.30                   # IoU threshold for "same person across frames"
+
+
+@dataclass
 class BehaviorDecision:
     state: str
     cues: list[str]
@@ -994,6 +1026,10 @@ class VisionEngine:
         self.behavior = BehaviorTracker(config)
         self.theft_tracker = PackageTheftTracker(config)
         self.face_filter: FaceFilter | None = self._init_face_filter(config)
+        # Sticky identity anchors — see _IdentityAnchor docstring. Survives
+        # face-detection dropouts (subject turns to grab the box, lighting
+        # changes, motion blur) so suppression doesn't blink off mid-action.
+        self._identity_anchors: list[_IdentityAnchor] = []
         self._prev_motion_gray: Any | None = None
         self._artifact_dir_ensured = False
         # Demo-mode flag driving carryable label set
@@ -1114,6 +1150,127 @@ class VisionEngine:
             self.config.debug_overlay,
             self.config.save_failure_artifacts,
         )
+
+    def _maintain_identity_anchors(
+        self,
+        persons: list[Detection],
+        verdicts: list[Any],
+        now: float,
+    ) -> list[Any]:
+        """Apply sticky-by-position identity anchoring to per-box verdicts.
+
+        Returns the verdicts list with face-hidden boxes filled in from
+        confirmed anchors (IoU + recency match). Mutates self._identity_anchors
+        in place: refresh on fresh known verdicts, expire on lack of overlap.
+
+        See _IdentityAnchor class docstring for the user-facing rules.
+        """
+        from .face_filter import PersonVerdict
+
+        if not persons:
+            # Persons all left frame — let anchors age out and clear if needed.
+            self._identity_anchors = [
+                a for a in self._identity_anchors
+                if (now - a.last_seen_at) <= _ANCHOR_EXPIRE_SECONDS
+            ]
+            return list(verdicts)
+
+        if not verdicts:
+            verdicts = [PersonVerdict(None, 0.0, "no_face") for _ in persons]
+
+        # Step 1: refresh / create anchors from THIS frame's high-confidence
+        # known verdicts. We require similarity >= _ANCHOR_HIGH_CONF to seed
+        # an anchor, but lower-confidence known matches still benefit from
+        # already-confirmed anchors via the inherit step below.
+        for det, verdict in zip(persons, verdicts):
+            if verdict is None or not verdict.is_known:
+                continue
+            if verdict.similarity < _ANCHOR_HIGH_CONF:
+                continue
+            existing = next(
+                (
+                    a
+                    for a in self._identity_anchors
+                    if a.name == verdict.name
+                    and _box_iou(a.box, det.box) >= _ANCHOR_IOU
+                ),
+                None,
+            )
+            if existing is None:
+                self._identity_anchors.append(
+                    _IdentityAnchor(
+                        name=verdict.name,
+                        box=det.box,
+                        first_seen_at=now,
+                        last_seen_at=now,
+                        last_known_seen_at=now,
+                    )
+                )
+                continue
+            existing.box = det.box
+            existing.last_seen_at = now
+            existing.last_known_seen_at = now
+            if (
+                not existing.confirmed
+                and (now - existing.first_seen_at) >= _ANCHOR_CONFIRM_SECONDS
+            ):
+                existing.confirmed = True
+                log.info(
+                    "Identity anchor CONFIRMED: %s (sustained %.2fs at sim>=%.2f)",
+                    existing.name,
+                    now - existing.first_seen_at,
+                    _ANCHOR_HIGH_CONF,
+                )
+
+        # Step 2: for each person box that DOESN'T have a known verdict and
+        # whose face wasn't visibly someone-else, inherit identity from a
+        # confirmed anchor whose last verified sighting was recent.
+        augmented: list[Any] = []
+        for det, verdict in zip(persons, verdicts):
+            if verdict is not None and verdict.is_known:
+                augmented.append(verdict)
+                continue
+            # If the face was clearly seen but didn't match anyone, that's a
+            # different person — never inherit. Otherwise (no_face,
+            # face_too_small, low_quality, extreme_yaw) the face is hidden
+            # and inheritance is safe.
+            if verdict is not None and verdict.reason == "unknown":
+                augmented.append(verdict)
+                continue
+            matched = next(
+                (
+                    a
+                    for a in self._identity_anchors
+                    if a.confirmed
+                    and _box_iou(a.box, det.box) >= _ANCHOR_IOU
+                    and (now - a.last_known_seen_at) <= _ANCHOR_INHERIT_WINDOW_SECONDS
+                ),
+                None,
+            )
+            if matched is not None:
+                matched.last_seen_at = now
+                matched.box = det.box  # smooth track to current YOLO box
+                augmented.append(
+                    PersonVerdict(matched.name, 0.99, "anchored")
+                )
+            else:
+                augmented.append(
+                    verdict if verdict is not None else PersonVerdict(None, 0.0, "no_face")
+                )
+
+        # Step 3: expire anchors that haven't been refreshed (= subject left).
+        before = len(self._identity_anchors)
+        self._identity_anchors = [
+            a for a in self._identity_anchors
+            if (now - a.last_seen_at) <= _ANCHOR_EXPIRE_SECONDS
+        ]
+        if len(self._identity_anchors) < before:
+            log.info(
+                "Identity anchor expired (subject left frame, no overlap for >%.1fs)",
+                _ANCHOR_EXPIRE_SECONDS,
+            )
+
+        return augmented
 
     def _resolve_face_db_path(self, config: Config) -> str:
         """Return the gallery file we should actually load.
@@ -1468,7 +1625,9 @@ class VisionEngine:
             # to fire) so the overlay can stamp `aditya 0.92` on the bounding
             # box continuously — that's the visual proof the suppression
             # logic is alive. We compute per-detection verdicts (aligned 1:1
-            # with `persons`) so the overlay renderer can index by position.
+            # with `persons`) and then apply sticky identity anchoring so a
+            # subject who turns to grab the box doesn't briefly drop out of
+            # recognition mid-action.
             face_verdicts: list[Any] = []
             if self.face_filter is not None and persons:
                 try:
@@ -1477,6 +1636,13 @@ class VisionEngine:
                 except Exception as exc:
                     log.warning("Face filter raised; per-box verdicts skipped: %s", exc)
                     face_verdicts = []
+                face_verdicts = self._maintain_identity_anchors(
+                    persons, face_verdicts, captured_at
+                )
+            elif self.face_filter is not None:
+                # No persons in frame — let anchors age out so a stale Aditya
+                # tag doesn't survive into the next person who walks up.
+                self._maintain_identity_anchors([], [], captured_at)
             decision = BehaviorDecision(
                 state=decision.state,
                 cues=decision.cues,
