@@ -18,6 +18,9 @@ media/
 *.mp4
 events.jsonl
 
+# cross-cam demo artifacts (generated)
+data/
+
 .DS_Store
 .idea/
 .vscode/
