@@ -95,6 +95,9 @@ class Config:
         os.getenv("AMAZON_STORAGE_STATE", "./media/amazon_storage_state.json")
     )
     amazon_dry_run: bool = _bool("AMAZON_DRY_RUN", True)
+    amazon_orders_cache: Path = Path(
+        os.getenv("AMAZON_ORDERS_CACHE", "./media/amazon_orders.json")
+    )
     return_log_path: Path = Path(os.getenv("RETURN_LOG_PATH", "./media/return_log.jsonl"))
 
     def elevenlabs_play_enabled(self) -> bool:

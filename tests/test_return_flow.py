@@ -49,7 +49,7 @@ def _stub_return(monkeypatch, ok: bool, error: Optional[str] = None) -> list[str
     """Stub Amazon return; record order_ids attempted. Returns the list."""
     attempts: list[str] = []
 
-    def fake_init(order_id, *, incident_id, evidence_url=None, reason=None, config=None):
+    def fake_init(order_id, *, incident_id, asin=None, evidence_url=None, reason=None, config=None):
         attempts.append(order_id)
         return ReturnResult(
             ok=ok,

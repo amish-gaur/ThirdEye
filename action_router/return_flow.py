@@ -22,7 +22,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from . import return_log
-from .amazon_return import ReturnResult, initiate_return
+from .amazon_return import ReturnResult
+from .amazon_return_agent import initiate_return
 from .config import CONFIG, Config
 from .disambiguate import (
     PendingDecision,
@@ -110,6 +111,7 @@ def maybe_initiate_return(
         return_result = initiate_return(
             match.order_id,
             incident_id=incident_id,
+            asin=match.asin,
             evidence_url=clip_url,
             config=cfg,
         )

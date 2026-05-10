@@ -26,6 +26,7 @@ class OrderCandidate:
     order_id: str
     title: str
     confidence: float
+    asin: Optional[str] = None
     thumbnail_url: Optional[str] = None
     delivered_at: Optional[str] = None  # ISO 8601 string
 
@@ -34,6 +35,7 @@ class OrderCandidate:
             "order_id": self.order_id,
             "title": self.title,
             "confidence": round(self.confidence, 3),
+            "asin": self.asin,
             "thumbnail_url": self.thumbnail_url,
             "delivered_at": self.delivered_at,
         }
@@ -52,6 +54,7 @@ class PackageMatch:
     order_id: Optional[str]
     order_title: Optional[str]
     confidence: float
+    asin: Optional[str] = None
     candidates: List[OrderCandidate] = field(default_factory=list)
     reasoning: str = ""
 
@@ -64,6 +67,7 @@ class PackageMatch:
             "order_id": self.order_id,
             "order_title": self.order_title,
             "confidence": round(self.confidence, 3),
+            "asin": self.asin,
             "candidates": [c.to_dict() for c in self.candidates],
             "reasoning": self.reasoning,
         }
@@ -88,17 +92,22 @@ def _stub_identifier(clip_path: Optional[str], event: Dict[str, Any]) -> Package
         confidence = 0.0
     order_id = os.getenv("IDENTIFIER_STUB_ORDER_ID") or None
     order_title = os.getenv("IDENTIFIER_STUB_ORDER_TITLE") or None
+    asin = os.getenv("IDENTIFIER_STUB_ASIN") or None
     if not order_id or confidence <= 0:
         return PackageMatch.empty("stub identifier: no order configured")
     candidates = [
         OrderCandidate(
-            order_id=order_id, title=order_title or order_id, confidence=confidence
+            order_id=order_id,
+            title=order_title or order_id,
+            confidence=confidence,
+            asin=asin,
         )
     ]
     return PackageMatch(
         order_id=order_id,
         order_title=order_title,
         confidence=confidence,
+        asin=asin,
         candidates=candidates,
         reasoning="stub identifier (env-driven)",
     )

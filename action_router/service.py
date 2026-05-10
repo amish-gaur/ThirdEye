@@ -12,7 +12,8 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import disambiguate, return_log
-from .amazon_return import initiate_return
+from .amazon_return_agent import initiate_return
+from .claude_identifier import install as install_claude_identifier
 from .config import CONFIG
 from .router import execute_action
 from .twiml import say_response
@@ -25,6 +26,14 @@ def create_app() -> FastAPI:
 
     media_dir = CONFIG.ensure_media_dir()
     app.mount("/media", StaticFiles(directory=str(media_dir)), name="media")
+
+    # Activate the vision-based identifier (replaces the env-var stub).
+    # Safe to call even if the orders cache is empty — identifier will
+    # return PackageMatch.empty() and the router falls back to evidence-only.
+    try:
+        install_claude_identifier()
+    except Exception:
+        log.exception("claude_identifier install failed; falling back to stub")
 
     @app.get("/health")
     def health() -> Dict[str, Any]:
@@ -131,13 +140,12 @@ def create_app() -> FastAPI:
             return Response(content="<Response/>", media_type="application/xml")
 
         disambiguate.resolve(pending.incident_id, f"picked:{order_id}")
-        order_title = next(
-            (c.title for c in pending.candidates if c.order_id == order_id),
-            order_id,
-        )
+        picked = next((c for c in pending.candidates if c.order_id == order_id), None)
+        order_title = picked.title if picked else order_id
         return_result = initiate_return(
             order_id,
             incident_id=pending.incident_id,
+            asin=picked.asin if picked else None,
             config=CONFIG,
         )
         return_log.append(
