@@ -68,6 +68,7 @@ class ClassificationRequest:
     frame_seq: int
     frame_bgr: Any
     yolo_classes: list[str]
+    extra_frames: list[Any] = field(default_factory=list)
 
 
 @dataclass
@@ -599,6 +600,10 @@ class VisionEngine:
         # Latest Qwen output, surfaced on the camera overlay so you can SEE
         # what the model is saying about you in real time.
         self.last_classification = LastClassification()
+        # Last time we fired a Qwen classification — used by the demo fast-path.
+        self._last_fire_at: float = 0.0
+        # Throttle for "why didn't this fire" debug log so we don't spam.
+        self._last_fire_block_log_at: float = 0.0
 
         self.yolo = YOLO(config.yolo_model)
         self.yolo.to(self.device)
@@ -703,11 +708,31 @@ class VisionEngine:
                         [(d.label, round(d.confidence, 2)) for d in carryables],
                     )
 
-                if decision.should_classify:
+                # Demo fast-path: if no fire in N seconds AND we see a person
+                # right now, classify anyway. Means a punch / theft caught
+                # outside the entry zone still triggers a call.
+                fast_path = self._should_fast_path(persons, carryables, captured_at)
+                should_fire = decision.should_classify or fast_path
+
+                if not should_fire and persons:
+                    self._log_fire_block(
+                        decision=decision,
+                        persons=persons,
+                        carryables=carryables,
+                        now=captured_at,
+                    )
+
+                if should_fire:
                     yolo_classes = sorted(
                         {d.label for d in persons} | {d.label for d in carryables}
                     ) or ["person"]
-                    if decision.candidate and decision.candidate.last_carryable_label:
+                    if fast_path and not decision.should_classify:
+                        log.info(
+                            "Fast-path firing: %s with %s",
+                            [d.label for d in persons],
+                            [d.label for d in carryables] or "no carryable",
+                        )
+                    elif decision.candidate and decision.candidate.last_carryable_label:
                         log.info(
                             "Candidate firing: carryable=%s frames=%d dwell=%.2fs",
                             decision.candidate.last_carryable_label,
@@ -717,7 +742,7 @@ class VisionEngine:
                     latest_frame = self.frame_buffer[-1]
 
                     if self.config.mock_classifier:
-                        parsed, raw = self._classify_with_qwen(frame, 0.0)
+                        parsed, raw = self._classify_with_qwen([frame], 0.0)
                         if parsed:
                             event = build_event(
                                 classification=parsed,
@@ -730,14 +755,21 @@ class VisionEngine:
                             print(json.dumps(event, ensure_ascii=True))
                             self._publish_event(event)
                         fired = True
+                        self._last_fire_at = captured_at
                     else:
+                        # Multi-frame: pass the most recent N frames so Qwen
+                        # can see motion (a swing, a grab, a fall).
+                        recent = self._collect_recent_frames(self.config.qwen_frames_per_inference)
                         request = ClassificationRequest(
                             timestamp=latest_frame.timestamp,
                             frame_seq=self.frame_seq,
                             frame_bgr=latest_frame.frame_bgr.copy(),
                             yolo_classes=yolo_classes,
+                            extra_frames=recent[:-1],  # historical context
                         )
                         fired = self._submit_classification(request)
+                        if fired:
+                            self._last_fire_at = captured_at
 
                     if self.config.save_failure_artifacts:
                         self._save_artifact(
@@ -851,11 +883,13 @@ class VisionEngine:
     # ---------------------------------------------------------------------
 
     def _classify_with_qwen(
-        self, frame_bgr: Any, time_elapsed_seconds: float
+        self, frames_bgr: Any, time_elapsed_seconds: float
     ) -> tuple[dict[str, Any] | None, str]:
+        # Accept either a single frame or a list — multi-frame is the new path
+        # but the mock classifier still calls with a list of one.
+        if not isinstance(frames_bgr, list):
+            frames_bgr = [frames_bgr]
         if self.config.mock_classifier:
-            # Make mock output OBVIOUSLY mock so you can't confuse it for a real
-            # Qwen description in a demo.
             raw_answer = json.dumps(
                 {
                     "tier": 3,
@@ -870,16 +904,11 @@ class VisionEngine:
             result = evaluate_classifier_output(raw_answer, time_elapsed_seconds)
             return result.payload, raw_answer
 
-        image = frame_to_pil(self._downscale_frame_for_qwen(frame_bgr))
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image"},
-                    {"type": "text", "text": VISION_LANGUAGE_PROMPT},
-                ],
-            }
-        ]
+        # Multi-frame: downscale each, build a multi-image content block.
+        images = [frame_to_pil(self._downscale_frame_for_qwen(f)) for f in frames_bgr]
+        content: list[dict[str, Any]] = [{"type": "image"} for _ in images]
+        content.append({"type": "text", "text": VISION_LANGUAGE_PROMPT})
+        messages = [{"role": "user", "content": content}]
         prompt_text = self.processor.apply_chat_template(
             messages,
             tokenize=False,
@@ -887,7 +916,7 @@ class VisionEngine:
         )
         inputs = self.processor(
             text=[prompt_text],
-            images=[image],
+            images=images,
             padding=True,
             return_tensors="pt",
         )
@@ -944,8 +973,11 @@ class VisionEngine:
 
             try:
                 classification_started_at = time.time()
+                # Pass the historical context frames first, then the most recent
+                # frame last so Qwen knows which one is "now".
+                frames = list(request.extra_frames) + [request.frame_bgr]
                 parsed, raw_answer = self._classify_with_qwen(
-                    request.frame_bgr,
+                    frames,
                     classification_started_at - request.timestamp,
                 )
                 if parsed is None:
@@ -1072,6 +1104,89 @@ class VisionEngine:
         except RuntimeError:
             pass
 
+    def _should_fast_path(
+        self,
+        persons: list[Detection],
+        carryables: list[Detection],
+        now: float,
+    ) -> bool:
+        """Demo fast-path: classify when behavior tracker hasn't fired in a while.
+
+        Real production deployments rely on the BehaviorTracker zone+dwell+pair
+        logic to suppress passersby. For a live demo we want classification to
+        trigger reliably on a person within a few seconds even if the entry
+        zone or pairing thresholds aren't perfectly tuned. This kicks in only
+        when no fire has happened recently.
+        """
+        if not self.config.demo_fast_path:
+            return False
+        if not persons:
+            return False
+        if self._classification_busy():
+            return False
+        if (now - self._last_fire_at) < self.config.demo_fast_path_cooldown_seconds:
+            return False
+        return True
+
+    def _collect_recent_frames(self, count: int) -> list[Any]:
+        """Sample up to `count` frames from the rolling buffer (oldest first).
+
+        Used to give Qwen multi-frame context. We sample evenly across the
+        buffer so motion (a punch, a grab) is visible across the chosen frames.
+        """
+        if count <= 1 or len(self.frame_buffer) <= 1:
+            return [self.frame_buffer[-1].frame_bgr.copy()] if self.frame_buffer else []
+        buffered = list(self.frame_buffer)
+        if len(buffered) <= count:
+            return [b.frame_bgr.copy() for b in buffered]
+        # Evenly spaced indices, always including the most recent.
+        step = (len(buffered) - 1) / (count - 1)
+        indices = sorted({int(round(i * step)) for i in range(count)})
+        return [buffered[i].frame_bgr.copy() for i in indices]
+
+    def _log_fire_block(
+        self,
+        *,
+        decision: BehaviorDecision,
+        persons: list[Detection],
+        carryables: list[Detection],
+        now: float,
+    ) -> None:
+        """Throttled log explaining why a frame with a person didn't classify."""
+        if (now - self._last_fire_block_log_at) < 2.0:
+            return
+        self._last_fire_block_log_at = now
+        reasons = []
+        if not carryables:
+            reasons.append("no carryable detected")
+        if decision.candidate is None:
+            reasons.append("no candidate (person + carryable not paired in zone)")
+        elif decision.candidate.interaction_frames < self.behavior.interaction_frames_required:
+            reasons.append(
+                f"need {self.behavior.interaction_frames_required} paired frames, "
+                f"have {decision.candidate.interaction_frames}"
+            )
+        elif decision.candidate.recent_zone_dwell < self.behavior.min_dwell_seconds:
+            reasons.append(
+                f"need {self.behavior.min_dwell_seconds:.2f}s dwell in zone, "
+                f"have {decision.candidate.recent_zone_dwell:.2f}s"
+            )
+        if decision.suppression_active:
+            reasons.append("post-fire suppression active")
+        cooldown_ok = (now - self.behavior.last_emitted_at) >= self.config.classification_cooldown_seconds
+        if not cooldown_ok:
+            reasons.append(
+                f"cooldown {self.config.classification_cooldown_seconds:.1f}s "
+                f"({now - self.behavior.last_emitted_at:.1f}s elapsed)"
+            )
+        log.info(
+            "Frame %d not classified: persons=%d carryables=%d -- %s",
+            self.frame_seq,
+            len(persons),
+            len(carryables),
+            "; ".join(reasons) or "no specific reason",
+        )
+
     def _update_last_classification(self, event: dict[str, Any]) -> None:
         """Cache the latest Qwen output so the camera overlay can render it."""
         with self.state_lock:
@@ -1177,6 +1292,9 @@ def _config_with(post_events: bool | None = None) -> Config:
         pair_iou_threshold=CONFIG.pair_iou_threshold,
         pair_distance_ratio=CONFIG.pair_distance_ratio,
         demo_mode_theft_bias=CONFIG.demo_mode_theft_bias,
+        qwen_frames_per_inference=CONFIG.qwen_frames_per_inference,
+        demo_fast_path=CONFIG.demo_fast_path,
+        demo_fast_path_cooldown_seconds=CONFIG.demo_fast_path_cooldown_seconds,
     )
 
 

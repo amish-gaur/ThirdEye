@@ -122,5 +122,17 @@ class Config:
     # Demo mode: bias toward catching theft cues quickly during live demos
     demo_mode_theft_bias: bool = _bool("DEMO_MODE_THEFT_BIAS", False)
 
+    # Qwen multi-frame inference: pass the most recent N frames (1-4) so the
+    # model can see motion (punching, grabbing, fleeing). 1 = single-frame.
+    qwen_frames_per_inference: int = _int("QWEN_FRAMES_PER_INFERENCE", 3)
+
+    # Demo fast-path: classify on any person sighting if the behavior tracker
+    # hasn't fired in N seconds. Trades some precision for reliability so demos
+    # don't silently miss events outside the entry zone.
+    demo_fast_path: bool = _bool("DEMO_FAST_PATH", True)
+    demo_fast_path_cooldown_seconds: float = _float(
+        "DEMO_FAST_PATH_COOLDOWN_SECONDS", 6.0
+    )
+
 
 CONFIG = Config()

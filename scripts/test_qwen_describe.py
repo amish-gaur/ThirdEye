@@ -55,11 +55,15 @@ def _load_image(path: Path):
     return frame
 
 
-def _run_qwen(frame_bgr) -> str:
-    import cv2  # noqa: F401  (used indirectly by engine helpers)
+def _run_qwen(frames_bgr) -> str:
+    """Run Qwen on a single frame OR a list of frames (multi-image)."""
+    import cv2  # noqa: F401
     import torch
     from PIL import Image
     from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
+
+    if not isinstance(frames_bgr, list):
+        frames_bgr = [frames_bgr]
 
     if not torch.backends.mps.is_available():
         print("WARNING: MPS not available, falling back to CPU (slow).", file=sys.stderr)
@@ -78,25 +82,19 @@ def _run_qwen(frame_bgr) -> str:
     ).to(device)
     model.eval()
 
-    import cv2
+    images = []
+    for frame_bgr in frames_bgr:
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        images.append(Image.fromarray(frame_rgb))
 
-    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    image = Image.fromarray(frame_rgb)
-
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image"},
-                {"type": "text", "text": VISION_LANGUAGE_PROMPT},
-            ],
-        }
-    ]
+    content = [{"type": "image"} for _ in images]
+    content.append({"type": "text", "text": VISION_LANGUAGE_PROMPT})
+    messages = [{"role": "user", "content": content}]
     prompt_text = processor.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
     inputs = processor(
-        text=[prompt_text], images=[image], padding=True, return_tensors="pt"
+        text=[prompt_text], images=images, padding=True, return_tensors="pt"
     )
     inputs = {k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()}
 
@@ -117,6 +115,12 @@ def main() -> None:
     parser.add_argument("--camera", type=int, default=int(CONFIG.camera_source) if CONFIG.camera_source.isdigit() else 0)
     parser.add_argument("--save", type=Path, default=None, help="Save the captured frame to this path")
     parser.add_argument("--repeat", type=int, default=1, help="Run N times (different frames) to check consistency")
+    parser.add_argument(
+        "--frames",
+        type=int,
+        default=CONFIG.qwen_frames_per_inference,
+        help="How many recent frames to send Qwen as multi-image (1-4). Default from CONFIG.",
+    )
     args = parser.parse_args()
 
     print("Loading Qwen2-VL... (first run downloads ~5GB of weights)")
@@ -125,19 +129,25 @@ def main() -> None:
     for i in range(args.repeat):
         if args.image:
             frame = _load_image(args.image)
+            frames = [frame]
             label = f"image={args.image.name}"
         else:
-            frame = _capture_frame_from_webcam(args.camera)
-            label = f"webcam-frame {i + 1}/{args.repeat}"
+            frames = []
+            for f_idx in range(max(1, args.frames)):
+                frames.append(_capture_frame_from_webcam(args.camera))
+                if f_idx < args.frames - 1:
+                    time.sleep(0.4)
+            frame = frames[-1]
+            label = f"webcam-frames {len(frames)}  attempt {i + 1}/{args.repeat}"
 
         if args.save:
             import cv2
 
             target = args.save if args.repeat == 1 else args.save.with_stem(args.save.stem + f"_{i + 1}")
             cv2.imwrite(str(target), frame)
-            print(f"Saved frame to {target}")
+            print(f"Saved last frame to {target}")
 
-        raw = _run_qwen(frame)
+        raw = _run_qwen(frames)
         result = evaluate_classifier_output(raw, 0.0)
 
         print("=" * 70)

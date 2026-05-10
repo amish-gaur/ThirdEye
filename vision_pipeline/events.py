@@ -26,65 +26,79 @@ from typing import Any
 # Prompt sent to the VLM (Qwen / Moondream). Tight, explicit, JSON-only.
 # ---------------------------------------------------------------------------
 
-VISION_LANGUAGE_PROMPT = """You are SafeWatch, a calm, factual security classifier.
-You are looking at a SINGLE FRAME from a camera (could be a home porch, an
-office hallway, a library, a parking lot, etc.). Describe ONLY what you can
-clearly see. NEVER guess, NEVER assume, NEVER invent details.
+VISION_LANGUAGE_PROMPT = """You are SafeWatch, a sharp-eyed home security classifier.
+You will be shown 1-3 RECENT FRAMES from the same camera (the most recent
+frame is last). Your job: describe the person and what they are doing
+specifically and confidently. A vague answer is worse than a slightly
+wrong one — give your best concrete guess.
 
-Pick ONE behavior_pattern that best matches what the person is doing IN THIS FRAME:
-  walking_through   - just passing by, no interaction with property
-  loitering         - standing/lingering with no apparent purpose, no theft action
-  taking_item       - reaching for / picking up / removing an item that is not theirs
+Pick ONE behavior_pattern that matches the action across the frames:
+  walking_through   - passing by, no interaction with property
+  loitering         - standing/lingering for several frames with no purpose
+  taking_item       - reaching for / picking up / removing an item
   leaving_item      - placing an object down
-  opening_container - opening a bag/box/door/package
-  fleeing           - running away from the camera with an item
+  opening_container - opening a bag, box, door, or package
+  fleeing           - running with an item
   collapsed         - person on the ground, not moving normally
-  violence          - physical fight, weapon visible, threatening posture
+  violence          - punching, hitting, fighting, weapon visible, shoving
   other_benign      - clearly normal activity (delivery, walking pet, neighbor)
 
-Then map behavior_pattern to a tier:
+Map behavior_pattern to a tier:
   1 AMBIENT   = walking_through, other_benign
   2 NOTICE    = loitering, leaving_item
   3 ALERT     = taking_item, opening_container, fleeing
   4 EMERGENCY = collapsed, violence
 
-Carrying a backpack/bag/purse is NORMAL. Do NOT mark tier >= 3 just because
-someone is carrying something. You must see an actual theft action (reaching for
-property that isn't theirs, removing it, running off with it) to use tier 3.
+DESCRIPTION RULES (be specific):
+- ALWAYS include at least one CLOTHING COLOR. If you're not 100% sure, give
+  your best guess ("dark shirt", "light jacket"). NEVER write "person of
+  unclear appearance" — pick the most likely descriptor.
+- ALWAYS include build/height when visible: "tall", "short", "average build".
+- Include accessories that stand out: "with a backpack", "wearing a cap",
+  "carrying a bag".
+- 6-18 words. Lead with the most obvious visual feature.
+- Examples of GOOD descriptions:
+    "tall man in a black shirt and gray jeans with a backpack"
+    "short person in a dark hoodie and light pants"
+    "young woman in a green jacket carrying a tote bag"
+- Examples of BAD descriptions (NEVER write these):
+    "person of unclear appearance"
+    "a person"
+    "subject"
 
-DESCRIPTION HONESTY (CRITICAL):
-- Describe ONLY clothing/build features that are CLEARLY VISIBLE in this frame.
-- If you cannot tell the color of an item, say "unknown color" or omit it.
-  DO NOT guess "red" if it could also be brown or orange.
-- If you cannot tell gender, say "person" — DO NOT guess "man" or "woman".
-- Lead with the MOST OBVIOUS visible feature (e.g. "tall person in a black
-  shirt and gray jeans", "short person in a dark coat with a backpack").
-- If the frame is too blurry, dark, or partial to see clothing clearly, return
-  "person of unclear appearance" and confidence <= 0.3.
+BEHAVIOR RULES (commit to a tier):
+- If you see ANY hint of theft motion (reaching down toward an object,
+  carrying something away that wasn't there before), pick taking_item / tier 3.
+- If you see ANY hint of physical contact (fist, shove, grab), pick
+  violence / tier 4.
+- If the person is on the ground or unmoving, pick collapsed / tier 4.
+- Only use tier 1 when the person is clearly just walking through with no
+  interaction at all.
+- Carrying a backpack ALONE is tier 1. But carrying a backpack AND reaching
+  for something on the porch/table is tier 3.
 
-SCENE GROUNDING:
-- Describe the LOCATION you actually see in the "scene" field. Examples:
-  "library aisle", "office hallway", "front porch", "parking lot", "stairwell",
-  "kitchen counter", "outdoor entryway". Use whatever you can see.
-- If the location is ambiguous, use "the area in view" or "the camera view".
-- DO NOT make up "porch" or "home" if that is not what you see.
+CONFIDENCE:
+- 0.8+ : clear, multi-frame evidence of the behavior
+- 0.5-0.8 : likely behavior, some ambiguity
+- 0.3-0.5 : best guess but not certain
+- < 0.3  : you literally cannot tell
 
-OUTPUT RULES (strict):
-- Reply with ONE JSON object and NOTHING else. No prose, no markdown, no fences.
-- Keys (all required):
-    "tier"               : integer in {1,2,3,4}
-    "behavior_pattern"   : one of the strings listed above
-    "confidence"         : float in [0.0, 1.0]
-    "scene"              : 2-8 words describing the visible location/setting.
-    "suspect_description": 6-18 words. ONLY visible clothing/build/color.
-        NEVER include numbers, IDs, confidence scores, bounding-box coords,
-        model names, or phrases like "person 0", "person 0.08", "id 3", "track_2".
-    "one_line_summary"   : 8-20 words about the BEHAVIOR you actually saw in
-        this frame. Reference the behavior_pattern naturally.
-    "time_elapsed"       : short string (will be overwritten by the pipeline).
+NEVER include numbers, IDs, "person 0", "person 0.08", "id 3", "track_2",
+"conf=", bounding-box coords, or model names in any text field.
 
-If unsure, return tier 1 with behavior_pattern "other_benign" and confidence
-<= 0.3. Honest "I don't know" beats a wrong guess.
+SCENE: short phrase describing visible location ("library aisle", "office
+hallway", "front porch", "parking lot", "kitchen counter"). 2-8 words.
+
+OUTPUT (JSON only, no prose, no markdown, no code fences):
+{
+  "tier": 1|2|3|4,
+  "behavior_pattern": "<one of the patterns above>",
+  "confidence": 0.0-1.0,
+  "scene": "<2-8 word location>",
+  "suspect_description": "<6-18 word description with clothing color>",
+  "one_line_summary": "<8-20 word summary of the behavior you saw>",
+  "time_elapsed": "ignored"
+}
 """
 
 TIER_LABELS = {1: "AMBIENT", 2: "NOTICE", 3: "ALERT", 4: "EMERGENCY"}
@@ -221,27 +235,24 @@ def evaluate_classifier_output(
             "degrade", payload, "low-value content; degraded to tier 1"
         )
 
-    # Semantic guard: tier 3+ requires a theft-or-threat behavior pattern.
+    # Semantic guard: only clamp tier when Qwen EXPLICITLY chose a benign
+    # pattern. If pattern is missing or the model upgraded to a theft/threat
+    # pattern we trust the tier — otherwise we'd suppress every real event
+    # because the model defaults to "other_benign" when uncertain.
+    pattern_explicit = payload.get("_pattern_was_explicit", False)
     pattern = payload.get("behavior_pattern", "other_benign")
-    max_tier = BEHAVIOR_PATTERN_MAX_TIER.get(pattern, 2)
-    if payload["tier"] > max_tier:
-        original_tier = payload["tier"]
-        payload["tier"] = max_tier
-        return ClassificationResult(
-            "degrade",
-            payload,
-            f"clamped tier {original_tier} -> {max_tier} for behavior_pattern={pattern!r}",
-        )
-
-    # Description must contain a real visual descriptor (color/clothing/build).
-    # Otherwise we don't trust the model enough to fire a call about it.
-    if payload["tier"] >= 3 and not _has_visual_descriptor(payload["suspect_description"]):
-        payload["tier"] = 2
-        return ClassificationResult(
-            "degrade",
-            payload,
-            "suspect_description lacks visual descriptor; clamped to tier 2",
-        )
+    if pattern_explicit and pattern in {"walking_through", "other_benign"}:
+        max_tier = BEHAVIOR_PATTERN_MAX_TIER.get(pattern, 1)
+        if payload["tier"] > max_tier:
+            original_tier = payload["tier"]
+            payload["tier"] = max_tier
+            payload.pop("_pattern_was_explicit", None)
+            return ClassificationResult(
+                "degrade",
+                payload,
+                f"clamped tier {original_tier} -> {max_tier} for behavior_pattern={pattern!r}",
+            )
+    payload.pop("_pattern_was_explicit", None)
 
     return ClassificationResult("accept", payload, "ok")
 
@@ -393,6 +404,7 @@ def _normalize_classifier_payload(
     if "setting" in payload and "scene" not in payload:
         payload["scene"] = payload["setting"]
     payload.setdefault("time_elapsed", "ignored")
+    pattern_explicit = isinstance(payload.get("behavior_pattern"), str) and payload["behavior_pattern"].strip() != ""
     payload.setdefault("behavior_pattern", "other_benign")
 
     if not REQUIRED_CLASSIFIER_KEYS.issubset(payload.keys()):
@@ -431,6 +443,7 @@ def _normalize_classifier_payload(
         "one_line_summary": summary,
         "time_elapsed": f"{time_elapsed_seconds:.2f}s",
         "behavior_pattern": behavior_pattern,
+        "_pattern_was_explicit": pattern_explicit,
     }
 
 

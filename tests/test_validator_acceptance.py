@@ -204,7 +204,10 @@ def test_tier3_with_benign_pattern_is_clamped_to_ambient() -> None:
     assert "walking_through" in result.reason
 
 
-def test_tier3_with_loitering_is_clamped_to_notice() -> None:
+def test_tier3_with_loitering_is_passed_through_for_router_to_decide() -> None:
+    """Loitering is no longer auto-clamped at the validator. The router's
+    confidence floor + tier mapping handles non-theft patterns; this lets
+    Qwen tier-up legitimately ambiguous cases."""
     raw = (
         '{"tier": 3, "behavior_pattern": "loitering", "confidence": 0.7, '
         '"suspect_description": "young woman in green jacket near the door", '
@@ -212,8 +215,9 @@ def test_tier3_with_loitering_is_clamped_to_notice() -> None:
         '"time_elapsed": "x"}'
     )
     result = evaluate_classifier_output(raw, 1.0)
-    assert result.status == "degrade"
-    assert result.payload["tier"] == 2
+    assert result.status == "accept"
+    assert result.payload["tier"] == 3
+    assert result.payload["behavior_pattern"] == "loitering"
 
 
 def test_tier3_taking_item_is_accepted() -> None:
@@ -240,8 +244,10 @@ def test_tier4_violence_is_accepted() -> None:
     assert result.payload["tier"] == 4
 
 
-def test_tier3_without_visual_descriptor_is_clamped_to_notice() -> None:
-    """A tier-3 alert with no clothing/color descriptor lacks demo value."""
+def test_tier3_without_visual_descriptor_still_accepted_router_handles_it() -> None:
+    """The visual-descriptor clamp was killing real demos when Qwen played
+    safe with vague wording. We now accept and let the router/narration
+    enrich descriptions from YOLO labels if needed."""
     raw = (
         '{"tier": 3, "behavior_pattern": "taking_item", "confidence": 0.8, '
         '"suspect_description": "subject took the item", '
@@ -249,8 +255,8 @@ def test_tier3_without_visual_descriptor_is_clamped_to_notice() -> None:
         '"time_elapsed": "x"}'
     )
     result = evaluate_classifier_output(raw, 1.0)
-    assert result.status == "degrade"
-    assert result.payload["tier"] == 2
+    assert result.status == "accept"
+    assert result.payload["tier"] == 3
 
 
 def test_numeric_artifacts_are_scrubbed_from_description() -> None:
@@ -346,7 +352,11 @@ def test_behavior_pattern_aliases_normalized() -> None:
     assert result.payload["behavior_pattern"] == "taking_item"
 
 
-def test_missing_behavior_pattern_defaults_to_other_benign_and_degrades() -> None:
+def test_missing_behavior_pattern_does_not_clamp_tier() -> None:
+    """When Qwen omits behavior_pattern we no longer auto-clamp to tier 1.
+    The previous behavior was killing legitimate alerts when the model
+    forgot the field. Pattern defaults to 'other_benign' for downstream
+    template lookup but the tier from Qwen is honored."""
     raw = (
         '{"tier": 3, "confidence": 0.7, '
         '"suspect_description": "young man in red hoodie", '
@@ -354,7 +364,19 @@ def test_missing_behavior_pattern_defaults_to_other_benign_and_degrades() -> Non
         '"time_elapsed": "x"}'
     )
     result = evaluate_classifier_output(raw, 1.0)
-    # No pattern given -> defaults to benign -> tier 3 clamps down to 1.
+    assert result.status == "accept"
+    assert result.payload["tier"] == 3
+    assert result.payload["behavior_pattern"] == "other_benign"
+
+
+def test_explicit_walking_through_at_tier3_is_clamped() -> None:
+    """The clamp DOES still apply when Qwen explicitly chose a benign pattern."""
+    raw = (
+        '{"tier": 3, "behavior_pattern": "walking_through", "confidence": 0.9, '
+        '"suspect_description": "young woman in green jacket carrying a backpack", '
+        '"one_line_summary": "person walked past the porch", '
+        '"time_elapsed": "x"}'
+    )
+    result = evaluate_classifier_output(raw, 1.0)
     assert result.status == "degrade"
     assert result.payload["tier"] == 1
-    assert result.payload["behavior_pattern"] == "other_benign"

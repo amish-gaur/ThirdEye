@@ -103,9 +103,9 @@ def test_place_call_say_dry_run_returns_dryrun(dry_config) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_low_confidence_tier3_is_downgraded_to_sms(dry_config) -> None:
-    """Person 1 was overconfident: tier 3 with conf 0.4 should not call."""
-    event = sample_event(tier=3, confidence=0.40)
+def test_very_low_confidence_tier3_is_downgraded_to_sms(dry_config) -> None:
+    """Floor is 0.35 for ALERT — anything below should drop to SMS."""
+    event = sample_event(tier=3, confidence=0.20)
     result = execute_action(event, config=dry_config)
     assert result.tier == 2
     assert "call_homeowner" not in result.actions
@@ -120,9 +120,17 @@ def test_high_confidence_tier3_still_calls(dry_config) -> None:
     assert "call_homeowner" in result.actions
 
 
+def test_moderate_confidence_tier3_calls(dry_config) -> None:
+    """Qwen often returns 0.4-0.6 even for correct calls — should still ring."""
+    event = sample_event(tier=3, confidence=0.40)
+    result = execute_action(event, config=dry_config)
+    assert result.tier == 3
+    assert "call_homeowner" in result.actions
+
+
 def test_low_confidence_tier4_is_downgraded_to_alert(dry_config) -> None:
-    """Tier 4 with conf 0.6 should drop to tier 3 (call only, no cascade)."""
-    event = sample_event(tier=4, confidence=0.6)
+    """Tier 4 floor is 0.55 — below it drops to tier 3 call (no cascade)."""
+    event = sample_event(tier=4, confidence=0.45)
     result = execute_action(event, config=dry_config)
     assert result.tier == 3
     assert "call_homeowner" in result.actions
@@ -131,8 +139,8 @@ def test_low_confidence_tier4_is_downgraded_to_alert(dry_config) -> None:
 
 
 def test_very_low_confidence_tier4_is_downgraded_to_sms(dry_config) -> None:
-    """Tier 4 with conf 0.3 should drop all the way to tier 2."""
-    event = sample_event(tier=4, confidence=0.3)
+    """Tier 4 with conf 0.2 drops past the alert floor (0.35) all the way to tier 2."""
+    event = sample_event(tier=4, confidence=0.2)
     result = execute_action(event, config=dry_config)
     assert result.tier == 2
     assert "call_homeowner" not in result.actions

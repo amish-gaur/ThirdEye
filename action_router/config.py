@@ -74,10 +74,11 @@ class Config:
     use_elevenlabs: bool = _bool("USE_ELEVENLABS", False)
 
     # Confidence floors below which the router downgrades the tier instead of
-    # firing a phone call. Protects against Qwen over-classifying ambiguous
-    # scenes (someone walking through with a backpack) as ALERT.
-    alert_confidence_floor: float = _float("ALERT_CONFIDENCE_FLOOR", 0.55)
-    emergency_confidence_floor: float = _float("EMERGENCY_CONFIDENCE_FLOOR", 0.75)
+    # firing a phone call. Calibrated for Qwen2-VL-2B which routinely emits
+    # confidences in 0.3-0.7 even when correct. Override via env if you want
+    # to be stricter in a non-demo deployment.
+    alert_confidence_floor: float = _float("ALERT_CONFIDENCE_FLOOR", 0.35)
+    emergency_confidence_floor: float = _float("EMERGENCY_CONFIDENCE_FLOOR", 0.55)
 
     def elevenlabs_play_enabled(self) -> bool:
         """True only when MP3 <Play> can actually work (key + Twilio-reachable base URL)."""
