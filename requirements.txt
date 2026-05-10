@@ -22,6 +22,13 @@ torchvision>=0.20
 transformers>=4.55
 ultralytics>=8.3
 pillow>=10.4
+lap>=0.5.12        # Ultralytics ByteTrack linear assignment (auto-installed otherwise)
+
+# Cross-camera ReID + MCP demo
+torchreid>=0.2.5   # OSNet person re-identification
+tensorboard>=2.20  # transitive dep of torchreid (imported at module load)
+mcp>=1.27          # MCP SDK for the Claude.ai-as-UI demo surface
+gdown>=6.0         # download ReID weights from Google Drive model zoo
 
 # Dev / tests
 pytest>=8.0
