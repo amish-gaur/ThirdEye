@@ -152,5 +152,14 @@ class Config:
     clip_fps: int = _int("CLIP_FPS", 10)
     clip_writer_enabled: bool = _bool("CLIP_WRITER_ENABLED", True)
 
+    # Family-face exclusion. When enabled, enrolled family members are
+    # recognized in YOLO person crops and the candidate classification is
+    # suppressed if every visible person is family.
+    face_filter_enabled: bool = _bool("FACE_FILTER_ENABLED", False)
+    face_db_path: str = _str("FACE_DB_PATH", "./family_faces/embeddings.json")
+    face_similarity_threshold: float = _float("FACE_SIMILARITY_THRESHOLD", 0.45)
+    face_min_pixels: int = _int("FACE_MIN_PIXELS", 40)
+    face_emit_ambient_event: bool = _bool("FACE_EMIT_AMBIENT_EVENT", False)
+
 
 CONFIG = Config()

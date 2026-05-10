@@ -34,6 +34,7 @@ from ultralytics import YOLO
 from .clip_writer import write_clip
 from .config import CONFIG, Config
 from .events import VISION_LANGUAGE_PROMPT, build_event, evaluate_classifier_output
+from .face_filter import FaceFilter, PersonVerdict
 from .publisher import post_event, post_ready_signal
 
 FRAME_BUFFER_MAXLEN = 150
@@ -749,6 +750,25 @@ class VisionEngine:
         # Throttle for "why didn't this fire" debug log so we don't spam.
         self._last_fire_block_log_at: float = 0.0
         self._router_url_warned = False
+        # Throttle for the per-frame "suppressed by face filter" log line.
+        self._last_face_suppress_log_at: float = 0.0
+
+        # Face exclusion filter: built lazily so an InsightFace import error
+        # only matters when the filter is actually enabled.
+        self.face_filter: FaceFilter | None = None
+        if config.face_filter_enabled:
+            try:
+                self.face_filter = FaceFilter(
+                    db_path=config.face_db_path,
+                    similarity_threshold=config.face_similarity_threshold,
+                    min_face_pixels=config.face_min_pixels,
+                )
+            except Exception:
+                log.exception(
+                    "Face filter failed to initialize; continuing without it. "
+                    "Set FACE_FILTER_ENABLED=false to silence this."
+                )
+                self.face_filter = None
 
         self.yolo = YOLO(config.yolo_model)
         self.yolo.to(self.device)
@@ -879,6 +899,44 @@ class VisionEngine:
                     yolo_classes = sorted(
                         {d.label for d in persons} | {d.label for d in carryables}
                     ) or ["person"]
+
+                    # Family-face exclusion: if every visible person is a known
+                    # family member, suppress the (expensive) Qwen call.
+                    if self._is_all_family(frame, persons, captured_at):
+                        # Reset suppression on the BehaviorTracker so the next
+                        # candidate (a stranger) can still fire — otherwise the
+                        # cooldown set during the abandoned fire would block it.
+                        self.behavior.suppression_active = False
+                        self.behavior.last_emitted_at = 0.0
+                        if decision.candidate is not None:
+                            decision.candidate.alert_fired = False
+                        if self.config.save_failure_artifacts:
+                            self._save_artifact(
+                                kind="face_suppressed",
+                                frame_bgr=frame,
+                                decision=decision,
+                                persons=persons,
+                                carryables=carryables,
+                            )
+                        if self.config.face_emit_ambient_event:
+                            self._emit_family_ambient_event(persons, yolo_classes)
+                        # Skip classification entirely.
+                        if self.show_window:
+                            if self.config.debug_overlay:
+                                with self.state_lock:
+                                    last_cls = self.last_classification
+                                _draw_overlay(
+                                    frame,
+                                    config=self.config,
+                                    decision=decision,
+                                    last_classification=last_cls,
+                                )
+                            cv2.imshow("ThirdEye Vision Engine", frame)
+                            if cv2.waitKey(1) & 0xFF == ord("q"):
+                                break
+                        self._throttle_loop(loop_started_at)
+                        continue
+
                     if fast_path and not decision.should_classify:
                         log.info(
                             "Fast-path firing: %s with %s",
@@ -1488,6 +1546,80 @@ class VisionEngine:
             incident_id,
         )
 
+    def _is_all_family(
+        self,
+        frame_bgr: Any,
+        persons: list[Detection],
+        now: float,
+    ) -> bool:
+        """Return True iff every person box matches a known family member.
+
+        Returns False (do not suppress) when the filter is disabled, when there
+        are no persons, or when any person is unknown / face-not-visible.
+        """
+        if self.face_filter is None or not persons:
+            return False
+        person_boxes = [det.box for det in persons]
+        try:
+            suppress, verdicts = self.face_filter.all_known(
+                frame_bgr, person_boxes, now=now
+            )
+        except Exception:
+            log.exception("Face filter failed; falling through to classification.")
+            return False
+
+        # Throttle to avoid spamming, but ALWAYS log the verdict so we can see
+        # what the filter actually thought of each person — otherwise an
+        # "unknown" or "no_face" outcome is invisible.
+        if (now - self._last_face_suppress_log_at) >= 1.0:
+            self._last_face_suppress_log_at = now
+            verdict_summary = "; ".join(
+                f"{(v.name or '?')}({v.reason}, sim={v.similarity:.2f})"
+                for v in verdicts
+            )
+            if suppress:
+                log.info(
+                    "Face filter SUPPRESSED classification: %s", verdict_summary
+                )
+            else:
+                log.info(
+                    "Face filter did NOT suppress: %s", verdict_summary
+                )
+
+        return suppress
+
+    def _emit_family_ambient_event(
+        self,
+        persons: list[Detection],
+        yolo_classes: list[str],
+    ) -> None:
+        """Optionally publish a tier-1 'ambient' event for family activity.
+
+        Useful if the homeowner wants the action router's activity log to
+        record that family was on the porch even though no alert ran.
+        """
+        if not self.config.post_events:
+            return
+        try:
+            event = build_event(
+                classification={
+                    "tier": 1,
+                    "confidence": 1.0,
+                    "behavior_pattern": "other_benign",
+                    "scene": "the camera view",
+                    "suspect_description": "known family member",
+                    "one_line_summary": "family member detected; classification suppressed",
+                    "time_elapsed": "0.00s",
+                },
+                node_id=self.config.node_id,
+                frame_seq=self.frame_seq,
+                yolo_classes=yolo_classes,
+                raw_classifier="face_filter:family_match",
+            )
+            self._publish_event(event)
+        except Exception:
+            log.exception("Failed to emit family ambient event.")
+
     def _update_last_classification(self, event: dict[str, Any]) -> None:
         """Cache the latest Qwen output so the camera overlay can render it."""
         with self.state_lock:
@@ -1626,6 +1758,11 @@ def _config_with(post_events: bool | None = None) -> Config:
         qwen_frames_per_inference=CONFIG.qwen_frames_per_inference,
         demo_fast_path=CONFIG.demo_fast_path,
         demo_fast_path_cooldown_seconds=CONFIG.demo_fast_path_cooldown_seconds,
+        face_filter_enabled=CONFIG.face_filter_enabled,
+        face_db_path=CONFIG.face_db_path,
+        face_similarity_threshold=CONFIG.face_similarity_threshold,
+        face_min_pixels=CONFIG.face_min_pixels,
+        face_emit_ambient_event=CONFIG.face_emit_ambient_event,
     )
 
 

@@ -25,3 +25,6 @@ data/
 .idea/
 .vscode/
 yolo11n.pt
+
+# Family-face enrollment artifacts (photos + embeddings stay on-device).
+family_faces/

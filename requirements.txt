@@ -31,6 +31,10 @@ tensorboard>=2.20  # transitive dep of torchreid (imported at module load)
 mcp>=1.27          # MCP SDK for the Claude.ai-as-UI demo surface
 gdown>=6.0         # download ReID weights from Google Drive model zoo
 
+# Face exclusion (enrolled family members never trigger Qwen)
+insightface>=0.7
+onnxruntime>=1.17
+
 # Dev / tests
 pytest>=8.0
 pytest-mock>=3.14
