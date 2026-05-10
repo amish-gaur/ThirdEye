@@ -31,6 +31,7 @@ from PIL import Image
 from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
 from ultralytics import YOLO
 
+from .clip_writer import write_clip
 from .config import CONFIG, Config
 from .events import VISION_LANGUAGE_PROMPT, build_event, evaluate_classifier_output
 from .publisher import post_event
@@ -897,6 +898,7 @@ class VisionEngine:
                                 raw_classifier=raw,
                                 incident_id=self._incident_id_for_emit(captured_at),
                             )
+                            self._attach_clip(event)
                             self._update_last_classification(event)
                             print(json.dumps(event, ensure_ascii=True))
                             self._publish_event(event)
@@ -1216,6 +1218,7 @@ class VisionEngine:
                     timestamp=request.timestamp,
                     incident_id=self._incident_id_for_emit(request.timestamp),
                 )
+                self._attach_clip(event)
                 self._update_last_classification(event)
                 print(json.dumps(event, ensure_ascii=True))
                 self._publish_event(event)
@@ -1443,6 +1446,39 @@ class VisionEngine:
             len(persons),
             len(carryables),
             "; ".join(reasons) or "no specific reason",
+        )
+
+    def _attach_clip(self, event: dict[str, Any]) -> None:
+        """Encode the rolling buffer into an MP4 and stamp event['clip_filename'].
+
+        Best-effort: we never block the emit path on encoding errors. If
+        writing fails, downstream just gets evidence-free flow.
+        """
+        if not self.config.clip_writer_enabled:
+            return
+        incident_id = str(event.get("incident_id") or "incident")
+        filename = f"clip_{incident_id}.mp4"
+        out_path = os.path.join(self.config.clip_output_dir, filename)
+        try:
+            written = write_clip(
+                list(self.frame_buffer),
+                out_path,
+                fps=self.config.clip_fps,
+                lookback_seconds=self.config.clip_lookback_seconds,
+            )
+        except Exception:
+            log.exception("Clip writer failed for %s", incident_id)
+            return
+        if written is None:
+            return
+        event["clip_filename"] = filename
+        event["clip_path"] = written.path
+        event["clip_frame_count"] = written.frame_count
+        log.info(
+            "Wrote clip %s (%d frames) for incident %s",
+            written.path,
+            written.frame_count,
+            incident_id,
         )
 
     def _update_last_classification(self, event: dict[str, Any]) -> None:

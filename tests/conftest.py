@@ -48,4 +48,7 @@ def dry_config(tmp_path: Path) -> Config:
         dry_run=True,
         use_claude=False,
         use_elevenlabs=False,
+        return_flow_enabled=False,
+        return_log_path=tmp_path / "return_log.jsonl",
+        amazon_storage_state=tmp_path / "amazon_storage_state.json",
     )
