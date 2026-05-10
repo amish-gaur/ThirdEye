@@ -56,12 +56,21 @@ class QwenClothingCaptioner:
     """Callable: (track_id, crop_bgr) -> caption string.
 
     Pass a custom `_describe` for unit tests. Default lazily loads the
-    Qwen2-VL-2B-Instruct weights on first call.
+    Qwen2-VL-2B-Instruct weights on first call. Set `backend="cloud"`
+    to lazily build a Claude-backed describer instead — useful for
+    teammates whose laptops can't host Qwen weights. The class name is
+    kept for back-compat; "Qwen" here is now historical.
     """
 
     model_name: str = DEFAULT_MODEL
     device: str | None = None
     max_words: int = 18
+    backend: str = "qwen"
+    cloud_model: str | None = None
+    cloud_max_edge: int | None = None
+    cloud_jpeg_quality: int | None = None
+    cloud_max_tokens: int | None = None
+    cloud_timeout_seconds: float | None = None
 
     _describe: Optional[DescribeFn] = None
     _cache: dict[int, str] = field(default_factory=dict, init=False, repr=False)
@@ -92,10 +101,27 @@ class QwenClothingCaptioner:
     # --- describer plumbing --------------------------------------------
 
     def _get_describer(self) -> DescribeFn:
-        if self._describe is None:
-            self._describe = _RealQwenDescriber(
-                model_name=self.model_name, device=self.device,
-            )
+        if self._describe is not None:
+            return self._describe
+        backend = (self.backend or "qwen").lower()
+        if backend == "cloud":
+            from .cloud_classifier import CloudClothingDescriber
+            kwargs: dict[str, object] = {}
+            if self.cloud_model:
+                kwargs["model"] = self.cloud_model
+            if self.cloud_max_edge is not None:
+                kwargs["max_edge"] = self.cloud_max_edge
+            if self.cloud_jpeg_quality is not None:
+                kwargs["jpeg_quality"] = self.cloud_jpeg_quality
+            if self.cloud_max_tokens is not None:
+                kwargs["max_tokens"] = self.cloud_max_tokens
+            if self.cloud_timeout_seconds is not None:
+                kwargs["timeout_seconds"] = self.cloud_timeout_seconds
+            self._describe = CloudClothingDescriber(**kwargs)
+            return self._describe
+        self._describe = _RealQwenDescriber(
+            model_name=self.model_name, device=self.device,
+        )
         return self._describe
 
 

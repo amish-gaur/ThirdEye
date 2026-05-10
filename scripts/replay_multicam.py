@@ -148,8 +148,16 @@ def _build_real_tracker_factory(
 def _build_captioner(no_qwen: bool, device: str | None) -> Captioner:
     if no_qwen:
         return lambda _tid, _crop: ""
+    from vision_pipeline.config import CONFIG
     from vision_pipeline.qwen_captioner import QwenClothingCaptioner
-    return QwenClothingCaptioner(device=device)
+    return QwenClothingCaptioner(
+        device=device,
+        backend=CONFIG.classifier_backend,
+        cloud_model=CONFIG.cloud_classifier_model,
+        cloud_max_edge=CONFIG.cloud_classifier_max_edge,
+        cloud_jpeg_quality=CONFIG.cloud_classifier_jpeg_quality,
+        cloud_timeout_seconds=CONFIG.cloud_classifier_timeout_seconds,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

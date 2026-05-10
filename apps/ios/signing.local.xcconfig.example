@@ -1,0 +1,12 @@
+// Copy this file to `signing.local.xcconfig` and fill in your own team ID.
+//
+// To find your team ID:
+//   security find-identity -v -p codesigning
+// The 10-character string inside the parentheses is your team ID.
+// (Or open Xcode → Settings → Accounts → your Apple ID → see "Team ID".)
+
+LOCAL_DEVELOPMENT_TEAM = ABCDEFGHIJ
+
+// Personal Team profiles require globally-unique bundle IDs. Pick something
+// nobody else will register, e.g. com.<your-handle>.thirdeye
+LOCAL_BUNDLE_ID = com.aditya.thirdeye

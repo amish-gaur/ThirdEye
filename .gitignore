@@ -35,6 +35,9 @@ debug_vision/
 family_faces/
 .gstack/
 
+# Action-router runtime logs (uvicorn / Twilio / iMessage chatter).
+logs/
+
 # JS/TS workspace
 node_modules/
 .next/
