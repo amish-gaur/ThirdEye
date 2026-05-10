@@ -30,6 +30,10 @@ yolo11n.pt
 family_faces/
 .gstack/
 
+# Vision pipeline debug snapshots (per-frame jpg + json) and runtime logs.
+debug_vision/
+logs/
+
 # JS/TS workspace
 node_modules/
 .next/
