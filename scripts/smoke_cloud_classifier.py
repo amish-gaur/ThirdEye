@@ -24,6 +24,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
+from dotenv import load_dotenv
+
+# Test tooling trusts .env > shell env, so a stale ANTHROPIC_API_KEY left
+# in someone's zsh profile doesn't silently override what they just put
+# in .env. Production config (vision_pipeline/config.py) keeps the
+# default non-override behavior so shell exports still work in CI.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
 
 from vision_pipeline.cloud_classifier import CloudHeavyClassifier
 from vision_pipeline.config import CONFIG
