@@ -2,19 +2,16 @@ import type { CSSProperties } from "react";
 
 type ThirdEyeLogoProps = {
   size?: number;
-  /**
-   * Color used for the eye sclera cutout so it reads against the ring.
-   * Pass the surface behind the logo (e.g. cream brand pill).
-   */
+  /** Sclera + lens flare cutouts (match the surface behind the icon). */
   bg?: string;
   className?: string;
   style?: CSSProperties;
 };
 
 /**
- * Third Eye mark: geometric “camera hand” — rounded square body, three
- * stepped fingers on top, circular lens on the left with an eye inside.
- * Single fill color via `currentColor`.
+ * Third Eye — simplified flat OK-hand + eye (matches the bronze/maroon 3D
+ * reference: thumb & index form the ring, three fingers up, eye in the O).
+ * Angular finger shapes read “low poly” at small sizes; single fill via `currentColor`.
  */
 export function ThirdEyeLogo({
   size = 28,
@@ -34,24 +31,25 @@ export function ThirdEyeLogo({
       className={className}
       style={style}
     >
-      {/* Lens ring (thick donut) on the left, overlaps the body */}
+      {/* Palm / wrist — slight chamfer for a geometric silhouette */}
+      <path d="M 21 40 L 56 40 L 58 42 L 58 54 L 56 58 L 22 58 L 18 54 L 18 44 L 21 40 Z" />
+
+      {/* Three raised fingers — faceted trapezoids, slight outward spread */}
+      <path d="M 31 40 L 39 40 L 41.5 7 L 33 5.5 Z" />
+      <path d="M 39 40 L 46 40 L 48.5 11 L 42 10 Z" />
+      <path d="M 46 40 L 54 40 L 56.5 15 L 50.5 14 Z" />
+
+      {/* Thumb + index: circular aperture (even-odd hole) */}
       <path
-        d="M20 10 A16 16 0 1 1 20 54 A16 16 0 1 1 20 10 Z M20 17 A9 9 0 1 0 20 47 A9 9 0 1 0 20 17 Z"
+        d="M 19 18 A14 14 0 1 1 19 46 A14 14 0 1 1 19 18 Z M 19 26 A6 6 0 1 0 19 38 A6 6 0 1 0 19 26 Z"
         fillRule="evenodd"
       />
 
-      {/* Main body: rounded square */}
-      <rect x="27" y="28" width="33" height="30" rx="4.5" ry="4.5" />
-
-      {/* Three fingers on top — height decreases left → right */}
-      <rect x="29.5" y="9" width="7.5" height="19" rx="3.6" />
-      <rect x="39" y="13" width="7" height="15" rx="3.4" />
-      <rect x="48" y="17" width="6.5" height="11" rx="3.2" />
-
-      {/* Eye inside lens */}
-      <ellipse cx="20" cy="32" rx="7.2" ry="3.7" />
-      <ellipse cx="20" cy="32" rx="5.4" ry="2.3" fill={bg} />
-      <circle cx="20" cy="32" r="2.1" />
+      {/* Eye centered in the OK ring: lid ring + sclera + pupil + highlight */}
+      <ellipse cx="19" cy="32" rx="6.8" ry="3.6" />
+      <ellipse cx="19" cy="32" rx="5.1" ry="2.35" fill={bg} />
+      <circle cx="19" cy="32" r="2.15" />
+      <circle cx="20.6" cy="30.9" r="0.85" fill={bg} />
     </svg>
   );
 }
