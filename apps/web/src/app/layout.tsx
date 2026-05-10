@@ -4,7 +4,7 @@ import { Nav } from "@/components/Nav";
 import { MockProvider } from "@/components/MockProvider";
 
 export const metadata: Metadata = {
-  title: "SafeWatch — operator console",
+  title: "SafeWatch - operator console",
   description:
     "Vision models run inside this browser. Frames never leave your home network.",
 };

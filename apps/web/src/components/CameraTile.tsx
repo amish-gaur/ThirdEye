@@ -2,7 +2,7 @@
 import { useEffect, useRef } from "react";
 import type { NodeSummary } from "@safewatch/api-types";
 
-// Per-node tone shift inside the maroon family — never green/amber.
+// Per-node tone shift inside the maroon family - never green/amber.
 // Tier shifts deepest near the porch (where the active incident lives).
 const TONES: Record<string, { hot: string; cool: string }> = {
   node_porch: { hot: "#9A3142", cool: "#1F050A" },
@@ -46,7 +46,7 @@ export function CameraTile({
     const draw = () => {
       const w = canvas.width;
       const h = canvas.height;
-      // base radial wash — hot in upper-left fading to cool
+      // base radial wash - hot in upper-left fading to cool
       const grad = ctx.createRadialGradient(
         w * 0.25,
         h * 0.3,
@@ -61,7 +61,7 @@ export function CameraTile({
       ctx.fillStyle = grad;
       ctx.fillRect(0, 0, w, h);
 
-      // soft slow drift haze — pure maroon, very low alpha
+      // soft slow drift haze - pure maroon, very low alpha
       const haze = ctx.createLinearGradient(
         0,
         h * 0.5 + Math.sin(t * 0.008) * 30 * dpr,
@@ -74,7 +74,7 @@ export function CameraTile({
       ctx.fillStyle = haze;
       ctx.fillRect(0, 0, w, h);
 
-      // film grain — bright grains scarce, dark grains heavy
+      // film grain - bright grains scarce, dark grains heavy
       ctx.globalAlpha = 0.12;
       for (let i = 0; i < 600 * dpr; i++) {
         const x = Math.random() * w;
@@ -129,7 +129,7 @@ export function CameraTile({
     >
       <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
 
-      {/* scanline overlay — subtle */}
+      {/* scanline overlay - subtle */}
       <div className="pointer-events-none absolute inset-0 scanlines opacity-20 mix-blend-overlay" />
 
       {/* moving scan beam */}

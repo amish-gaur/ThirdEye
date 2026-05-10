@@ -9,7 +9,7 @@ const labels: Record<Tier, string> = {
   4: "Critical",
 };
 
-// Monochromatic — all shades within the maroon family.
+// Monochromatic - all shades within the maroon family.
 const styles: Record<Tier, { bg: string; ring: string; dot: string; fg: string }> = {
   1: { bg: "rgba(201,138,147,0.14)", ring: "rgba(201,138,147,0.28)", dot: "#C98A93", fg: "#E5B4BB" },
   2: { bg: "rgba(154,49,66,0.18)", ring: "rgba(154,49,66,0.40)", dot: "#9A3142", fg: "#E5B4BB" },

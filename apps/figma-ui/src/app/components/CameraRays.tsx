@@ -3,7 +3,7 @@ import { motion } from "motion/react";
 /**
  * Red light rays fanning out from the camera's red dot. Meant to be placed
  * absolutely-positioned inside the SecurityEye container, anchored to the
- * lens center. Buttery smooth — long durations, GPU-friendly transforms.
+ * lens center. Buttery smooth - long durations, GPU-friendly transforms.
  */
 export function CameraRays() {
   const rays = Array.from({ length: 14 }).map((_, i) => ({

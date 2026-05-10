@@ -93,7 +93,7 @@ export default function EventDetail() {
             </div>
             <ul className="mt-2 space-y-1 text-[13.5px] text-cream-50/85">
               {ev.actions_taken.length === 0 && (
-                <li className="text-cream-50/45">None — logged only</li>
+                <li className="text-cream-50/45">None - logged only</li>
               )}
               {ev.actions_taken.map((a) => (
                 <li key={a}>{a.replace(/_/g, " ")}</li>

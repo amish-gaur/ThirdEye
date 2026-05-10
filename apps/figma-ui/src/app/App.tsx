@@ -41,7 +41,7 @@ function useIncidentStream(): IncidentRowData[] {
         const ev = parsed.event ?? {};
         if (parsed.result?.duplicate) return;
         const row: IncidentRowData = {
-          // Router may downgrade tier (confidence floor, behavior ceiling) — trust its label.
+          // Router may downgrade tier (confidence floor, behavior ceiling) - trust its label.
           tier: tierFromName(parsed.result?.tier_label ?? ev.tier_name),
           title: ev.one_line_summary ?? ev.suspect_description ?? "(no summary)",
           node: `${ev.node_id ?? "NODE-?"}${ev.scene ? ` · ${ev.scene.toUpperCase()}` : ""}`,
@@ -161,7 +161,7 @@ export default function App() {
       }}
     >
       <AmbientBg />
-      {/* big retro shapes — flat, with offset shadow blocks */}
+      {/* big retro shapes - flat, with offset shadow blocks */}
       <div
         className="absolute pointer-events-none"
         style={{
@@ -380,7 +380,7 @@ function Dashboard() {
           style={{ color: C.deep }}
         >
           Severity-aware sensors. Frames stay on-device. We escalate only when
-          the world stops being calm — ambient, notice, alert, emergency.
+          the world stops being calm - ambient, notice, alert, emergency.
         </p>
 
         <div className="mt-8 flex items-center gap-3">

@@ -130,8 +130,8 @@ export default function SettingsPage() {
             left={<strong className="text-cream-50">Jurisdiction</strong>}
             right={
               <Select defaultValue="us-ca">
-                <option value="us-ca">US — California (two-party)</option>
-                <option value="us-tx">US — Texas (one-party)</option>
+                <option value="us-ca">US - California (two-party)</option>
+                <option value="us-tx">US - Texas (one-party)</option>
                 <option value="eu">EU (GDPR)</option>
                 <option value="uk">UK</option>
               </Select>

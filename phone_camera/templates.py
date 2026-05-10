@@ -2,7 +2,7 @@
 
 Kept as Python strings (no Jinja) so the package has zero filesystem
 dependencies and the templates can be substituted with `str.format` safely
-— every untrusted value is escaped first.
+- every untrusted value is escaped first.
 """
 
 from __future__ import annotations
@@ -80,7 +80,7 @@ footer {{ color: var(--muted); font-size: 12px; margin-top: 48px; text-align: ce
     <div class="logo">3E</div>
     <div>
       <h1>Pair a phone as a Third Eye</h1>
-      <div class="subtitle">Any device, any camera — turned into a SafeWatch sensor in one scan.</div>
+      <div class="subtitle">Any device, any camera - turned into a SafeWatch sensor in one scan.</div>
     </div>
   </header>
 
@@ -89,7 +89,7 @@ footer {{ color: var(--muted); font-size: 12px; margin-top: 48px; text-align: ce
       <ol class="steps">
         <li>Open your phone&rsquo;s camera and point it at the QR code.</li>
         <li>Tap the link that appears, then allow camera access.</li>
-        <li>Lay the phone where you want SafeWatch to watch — that&rsquo;s it.</li>
+        <li>Lay the phone where you want SafeWatch to watch - that&rsquo;s it.</li>
       </ol>
       <div class="status" id="statusRow">
         <div class="dot warn" id="statusDot"></div>
@@ -178,7 +178,7 @@ setInterval(tick, 800);
 def render_camera_page(*, token: str, ws_url: str, label_default: str) -> str:
     """Phone capture page: getUserMedia + WebSocket frame upload.
 
-    Re-skinned to match the Third Eye Figma Make design system —
+    Re-skinned to match the Third Eye Figma Make design system -
     cream/ink palette, thick black borders, offset block shadows,
     Playfair Display + DM Mono. JS behaviour and every element ID
     are preserved exactly so the existing handlers keep working.

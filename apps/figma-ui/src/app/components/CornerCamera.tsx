@@ -110,7 +110,7 @@ export function CornerCamera({ size = 130 }: { size?: number }) {
         }}
       />
 
-      {/* CAMERA BODY — pans with cursor */}
+      {/* CAMERA BODY - pans with cursor */}
       <motion.div
         className="absolute"
         style={{
@@ -183,7 +183,7 @@ export function CornerCamera({ size = 130 }: { size?: number }) {
           />
         </div>
 
-        {/* LENS — flush with the front (left side) */}
+        {/* LENS - flush with the front (left side) */}
         <div
           className="absolute"
           style={{

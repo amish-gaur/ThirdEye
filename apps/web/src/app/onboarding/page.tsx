@@ -35,7 +35,7 @@ export default function Onboarding() {
         {step === 0 && (
           <Stage
             title="Sign in with Clerk"
-            body="Production auth — works the same on web and mobile. We never store passwords ourselves."
+            body="Production auth - works the same on web and mobile. We never store passwords ourselves."
             cta="Continue"
             onContinue={() => setStep(1)}
           />
@@ -48,7 +48,7 @@ export default function Onboarding() {
             </h2>
             <p className="mt-2 text-[14px] text-cream-50/70">
               On the device that will run inference (this laptop, an old phone),
-              open SafeWatch and scan this QR. The node joins your home mesh — no
+              open SafeWatch and scan this QR. The node joins your home mesh - no
               router config, no port forwarding.
             </p>
             {!pair && (
@@ -73,7 +73,7 @@ export default function Onboarding() {
                     onClick={() => setStep(2)}
                     className="mt-5 rounded-full bg-cream-50 px-5 py-2 text-[13px] font-medium text-maroon-900 hover:bg-cream-100"
                   >
-                    Node paired — continue
+                    Node paired - continue
                   </button>
                 </div>
               </div>

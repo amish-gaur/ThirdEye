@@ -8,7 +8,7 @@ const RED = "#c8222d";
 const GOLD = "#f4c97a";
 
 /**
- * The iconic UC Davis water tower — cylindrical tank on a 4-leg lattice,
+ * The iconic UC Davis water tower - cylindrical tank on a 4-leg lattice,
  * "UC DAVIS" wrapping the tank. Styled flat in the project's Incredibles palette.
  */
 export function WaterTower({ size = 240 }: { size?: number }) {
@@ -36,7 +36,7 @@ export function WaterTower({ size = 240 }: { size?: number }) {
         </g>
         <Tower />
 
-        {/* slow flag waving on top — clickable easter egg */}
+        {/* slow flag waving on top - clickable easter egg */}
         <motion.g
           style={{ transformOrigin: "120px 18px", cursor: "pointer" }}
           animate={{ rotate: [-3, 3, -3] }}
@@ -190,7 +190,7 @@ function BigCow() {
       <ellipse cx="262" cy="116" rx="22" ry="16" fill={WINE} stroke={INK} strokeWidth={sw} />
       <ellipse cx="254" cy="116" rx="2.4" ry="3" fill={INK} />
       <ellipse cx="270" cy="116" rx="2.4" ry="3" fill={INK} />
-      {/* mouth — open mooing */}
+      {/* mouth - open mooing */}
       <path
         d="M 252 124 Q 262 134 272 124"
         fill={INK}
@@ -259,13 +259,13 @@ function Tower({ flat = false }: { flat?: boolean }) {
       <rect x="48" y="68" width="144" height="22" fill={flat ? INK : WINE} />
       <line x1="48" y1="68" x2="192" y2="68" stroke={INK} strokeWidth={2} />
       <line x1="48" y1="90" x2="192" y2="90" stroke={INK} strokeWidth={2} />
-      {/* bottom of tank — rounded base */}
+      {/* bottom of tank - rounded base */}
       <path d="M 48 112 Q 120 132 192 112 Z" fill={tankFill} stroke={INK} strokeWidth={sw} strokeLinejoin="round" />
 
       {/* outlet pipe to legs */}
       <rect x="112" y="124" width="16" height="14" fill={legFill} stroke={INK} strokeWidth={2.5} />
 
-      {/* LEGS — 4 splayed legs (drawn as 2 outer X-braced pairs) */}
+      {/* LEGS - 4 splayed legs (drawn as 2 outer X-braced pairs) */}
       {/* outer legs */}
       <line x1="60" y1="126" x2="20" y2="328" stroke={legFill} strokeWidth={7} strokeLinecap="round" />
       <line x1="60" y1="126" x2="20" y2="328" stroke={INK} strokeWidth={9} strokeLinecap="round" opacity={0} />

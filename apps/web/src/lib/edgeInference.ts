@@ -47,7 +47,7 @@ export async function ensureLoaded(): Promise<void> {
   emit();
   try {
     const tr = await import("@huggingface/transformers");
-    // @ts-ignore — runtime has env
+    // @ts-ignore - runtime has env
     if (tr.env) tr.env.allowLocalModels = false;
 
     const hasWebGPU = typeof navigator !== "undefined" && "gpu" in navigator;
@@ -56,7 +56,7 @@ export async function ensureLoaded(): Promise<void> {
     const pipe = await tr.pipeline(
       "feature-extraction",
       state.modelId,
-      // @ts-ignore — device is a runtime option
+      // @ts-ignore - device is a runtime option
       { device }
     );
     textPipe = pipe as unknown as Pipeline;
@@ -81,7 +81,7 @@ export async function embedText(text: string): Promise<Float32Array> {
   await ensureLoaded();
   if (!textPipe) throw new Error("model not ready");
   const start = performance.now();
-  // @ts-ignore — runtime call signature
+  // @ts-ignore - runtime call signature
   const out = await textPipe(text, { pooling: "mean", normalize: true });
   const arr = (out as { data: Float32Array }).data;
   const dt = performance.now() - start;

@@ -1,7 +1,7 @@
 import { motion } from "motion/react";
 
 /**
- * Subtle full-screen ambient layer (no rays — those live with the camera).
+ * Subtle full-screen ambient layer (no rays - those live with the camera).
  * Slow drifting maroon wash + faint warm motes floating upward.
  */
 export function AmbientBg() {

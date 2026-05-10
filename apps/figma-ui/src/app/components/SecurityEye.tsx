@@ -4,7 +4,7 @@ import { CameraRays } from "./CameraRays";
 
 /**
  * Ceiling-mount dome security camera, drawn flat 2D (Incredibles vibe).
- * No gradients — color-block fills with offset shadow shapes for depth.
+ * No gradients - color-block fills with offset shadow shapes for depth.
  * Single round black lens with a red dot that tracks the cursor.
  */
 export function SecurityEye({ size = 360 }: { size?: number }) {
@@ -39,7 +39,7 @@ export function SecurityEye({ size = 360 }: { size?: number }) {
     return () => clearInterval(id);
   }, []);
 
-  // Palette — cream Incredibles shell, glowy red interior
+  // Palette - cream Incredibles shell, glowy red interior
   const INK = "#1a0306";
   const SHELL = "#f4ead8";        // cream shell
   const SHELL_LIGHT = "#fff6e2";  // brighter top highlight
@@ -58,7 +58,7 @@ export function SecurityEye({ size = 360 }: { size?: number }) {
       className="relative select-none"
       style={{ width: W, height: H }}
     >
-      {/* RAYS — emanate from the red dot, sit behind everything */}
+      {/* RAYS - emanate from the red dot, sit behind everything */}
       <CameraRays />
 
       {/* SOFT FLOOR SHADOW under the camera */}
@@ -111,7 +111,7 @@ export function SecurityEye({ size = 360 }: { size?: number }) {
         />
       </div>
 
-      {/* DOME BODY — circular ceiling dome */}
+      {/* DOME BODY - circular ceiling dome */}
       <div
         className="absolute left-1/2 -translate-x-1/2"
         style={{
@@ -169,7 +169,7 @@ export function SecurityEye({ size = 360 }: { size?: number }) {
           />
         </div>
 
-        {/* IR LED RING — small dots around the lens */}
+        {/* IR LED RING - small dots around the lens */}
         <div className="absolute inset-0">
           {Array.from({ length: 16 }).map((_, i) => {
             const a = (i / 16) * Math.PI * 2;
@@ -214,7 +214,7 @@ export function SecurityEye({ size = 360 }: { size?: number }) {
               border: `3px solid ${INK}`,
             }}
           >
-            {/* RED DOT — tracks cursor */}
+            {/* RED DOT - tracks cursor */}
             <motion.div
               className="absolute top-1/2 left-1/2 rounded-full"
               style={{

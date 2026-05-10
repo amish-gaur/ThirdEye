@@ -39,7 +39,7 @@ export default function EdgeAdmin() {
           </h1>
           <p className="mt-5 text-[15.5px] leading-relaxed text-cream-50/65">
             The vision and embedding models run inside this browser. The cloud
-            sees structured event records — never pixels, never raw text. This
+            sees structured event records - never pixels, never raw text. This
             page is the receipt.
           </p>
         </div>
@@ -72,7 +72,7 @@ export default function EdgeAdmin() {
             <p className="mt-5 text-[13px] leading-relaxed text-cream-50/65">
               <span className="text-cream-50">What that means.</span>{" "}
               Your question (or a frame) is converted to a vector right here.
-              Only the vector — never the raw input — leaves your device.
+              Only the vector - never the raw input - leaves your device.
             </p>
           </div>
         </BentoCell>
@@ -89,7 +89,7 @@ export default function EdgeAdmin() {
                   <span className="text-maroon-200/70 text-[20px] ml-1">ms</span>
                 </>
               ) : (
-                <span className="text-cream-50/30">—</span>
+                <span className="text-cream-50/30">-</span>
               )}
             </div>
             <div className="font-mono text-[11px] text-cream-50/50">
@@ -148,7 +148,7 @@ export default function EdgeAdmin() {
               />
               <KV
                 k="loaded at"
-                v={s.loadedAt ? new Date(s.loadedAt).toLocaleTimeString() : "—"}
+                v={s.loadedAt ? new Date(s.loadedAt).toLocaleTimeString() : "-"}
               />
               <KV k="upload size" v="0 KB" />
             </div>
@@ -177,7 +177,7 @@ export default function EdgeAdmin() {
       {/* PROBE */}
       <Spotlight className="rounded-2xl card-glass ring-glow p-7">
         <div className="font-mono text-[10.5px] uppercase tracking-[0.22em] text-maroon-200/80">
-          Probe — see for yourself
+          Probe - see for yourself
         </div>
         <h3 className="mt-2 font-serif text-[24px] text-cream-50">
           Type anything. Watch the network tab stay empty.

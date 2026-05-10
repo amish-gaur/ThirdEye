@@ -2,7 +2,7 @@ import { motion } from "motion/react";
 import { RobberWaiting } from "./RobberWaiting";
 
 /**
- * Camera tile in an "awaiting backend feed" state. No fake video — just the
+ * Camera tile in an "awaiting backend feed" state. No fake video - just the
  * node identity, status, and a calm placeholder. Backend will mount the real
  * stream into the .feed-mount slot when wired up.
  */
@@ -79,7 +79,7 @@ export function CameraTile({
           </span>
         </div>
 
-        {/* feed mount — MJPEG renders natively in <img> when streamUrl is set */}
+        {/* feed mount - MJPEG renders natively in <img> when streamUrl is set */}
         <div className="flex-1 relative" data-feed-mount={name}>
           {streamUrl ? (
             <img

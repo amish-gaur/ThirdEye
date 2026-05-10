@@ -29,12 +29,12 @@ const config: Config = {
           950: "#120308",
         },
         ink: "#1F050A",
-        // severity tints — all monochromatic in the maroon family
+        // severity tints - all monochromatic in the maroon family
         sev: {
-          1: "#C98A93", // ambient — the lightest, almost dust
-          2: "#9A3142", // notice — mid maroon
-          3: "#5E1521", // alert — deep
-          4: "#1F050A", // critical — near black, with pulse
+          1: "#C98A93", // ambient - the lightest, almost dust
+          2: "#9A3142", // notice - mid maroon
+          3: "#5E1521", // alert - deep
+          4: "#1F050A", // critical - near black, with pulse
         },
       },
       fontFamily: {

@@ -81,7 +81,7 @@ export const handlers = [
 function answerFor(q: string): string {
   const lower = q.toLowerCase();
   if (lower.includes("porch") || lower.includes("package")) {
-    return "Yes — two events at the front porch in the last few hours: a delivery 2 hours ago and a package pickup 2 minutes ago that triggered an Alert.";
+    return "Yes - two events at the front porch in the last few hours: a delivery 2 hours ago and a package pickup 2 minutes ago that triggered an Alert.";
   }
   if (lower.includes("driveway") || lower.includes("car")) {
     return "Driveway has been quiet since a vehicle arrived ~5 hours ago. One loitering Notice 34 minutes ago near the side gate.";
