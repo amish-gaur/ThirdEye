@@ -630,6 +630,12 @@ _CARDBOARD_BOX_COLOR = (255, 0, 255)
 
 
 _OVERLAY_MIN_CONFIDENCE = 0.70
+# Cardboard threshold is much lower than persons because YOLO-World
+# typically scores cardboard at 0.10-0.50 even when correct (it was
+# trained with the prompt "cardboard box", not as a fixed COCO class).
+# Without this, the magenta box never appears even though the theft
+# tracker has already accepted the same detection.
+_OVERLAY_MIN_CARDBOARD_CONFIDENCE = 0.10
 
 
 def _draw_overlay(
@@ -688,14 +694,16 @@ def _draw_overlay(
         _draw(det, (0, 255, 0), 3 if is_candidate else 2)
 
     for det in decision.carryable_boxes:
-        if det.confidence < _OVERLAY_MIN_CONFIDENCE:
+        is_cardboard = det.label.strip().lower() == "cardboard box"
+        min_conf = (
+            _OVERLAY_MIN_CARDBOARD_CONFIDENCE
+            if is_cardboard
+            else _OVERLAY_MIN_CONFIDENCE
+        )
+        if det.confidence < min_conf:
             continue
         is_candidate = cand_carryable_box is not None and _box_iou(det.box, cand_carryable_box) > 0.3
-        color = (
-            _CARDBOARD_BOX_COLOR
-            if det.label.strip().lower() == "cardboard box"
-            else _CARRYABLE_BOX_COLOR
-        )
+        color = _CARDBOARD_BOX_COLOR if is_cardboard else _CARRYABLE_BOX_COLOR
         _draw(det, color, 3 if is_candidate else 2)
 
 
@@ -1741,7 +1749,12 @@ class VisionEngine:
         max_area_ratio = max(float(self.config.cardboard_box_max_area_ratio), 0.55)
         if area_ratio > max_area_ratio:
             return False
-        if self._person_overlap_ratio(det.box, persons) > 0.85:
+        # Reject only when the cardboard box is essentially identical to a
+        # person box (>=0.95 overlap) — that's almost certainly the model
+        # tagging a torso shape as "cardboard". Lower thresholds rejected
+        # legitimate detections of someone holding a box in front of them,
+        # which is the canonical demo scene.
+        if self._person_overlap_ratio(det.box, persons) > 0.95:
             return False
         x1, y1, x2, y2 = det.box
         width = max(0.0, x2 - x1)

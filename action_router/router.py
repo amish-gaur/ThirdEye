@@ -88,6 +88,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from ._trace import trace, trace_exception
 from .config import CONFIG, Config
 from .imessage import IMessageResult, send_imessage_fanout
 from .messaging import SmsResult, send_sms
@@ -151,6 +152,19 @@ class ActionResult:
 
 def execute_action(event_json: Dict[str, Any], config: Optional[Config] = None) -> ActionResult:
     cfg = config or CONFIG
+    started_at = time.monotonic()
+    trace(
+        "EVENT_IN",
+        level="BEGIN",
+        incident=event_json.get("incident_id"),
+        event=event_json.get("event_id"),
+        tier_raw=event_json.get("tier"),
+        pattern=event_json.get("behavior_pattern"),
+        confidence=event_json.get("confidence"),
+        scene=event_json.get("scene"),
+        suspect=event_json.get("suspect_description"),
+        clip_path=event_json.get("clip_path"),
+    )
     raw_tier = _coerce_tier(event_json.get("tier"))
     tier, behavior_note = _apply_behavior_ceiling(raw_tier, event_json)
     tier, downgrade_note = _apply_confidence_floor(tier, event_json, cfg)
@@ -160,6 +174,25 @@ def execute_action(event_json: Dict[str, Any], config: Optional[Config] = None) 
         result.actions.append(behavior_note)
     if downgrade_note:
         result.actions.append(downgrade_note)
+    trace(
+        "TIER",
+        level="STEP",
+        final=tier,
+        label=label,
+        raw=raw_tier,
+        behavior_note=behavior_note,
+        downgrade_note=downgrade_note,
+    )
+    trace(
+        "CONFIG",
+        level="INFO",
+        dry_run=cfg.dry_run,
+        use_elevenlabs=cfg.use_elevenlabs,
+        elevenlabs_play_enabled=cfg.elevenlabs_play_enabled(),
+        public_base_url=cfg.public_base_url,
+        twilio_configured=bool(cfg.twilio_account_sid),
+        imessage_enabled=cfg.imessage_enabled,
+    )
     log.info(
         "execute_action tier=%d (%s) raw_tier=%d event_id=%s incident_id=%s pattern=%s conf=%.2f summary=%r",
         tier,
@@ -175,6 +208,12 @@ def execute_action(event_json: Dict[str, Any], config: Optional[Config] = None) 
     if _is_duplicate(event_json):
         result.duplicate = True
         result.actions.append("dedup_skip")
+        trace(
+            "DEDUP_SKIP",
+            level="WARN",
+            incident=event_json.get("incident_id"),
+            event=event_json.get("event_id"),
+        )
         log.info(
             "Skipping duplicate event event_id=%s incident_id=%s",
             event_json.get("event_id"),
@@ -188,20 +227,35 @@ def execute_action(event_json: Dict[str, Any], config: Optional[Config] = None) 
         event_json["tier"] = tier
         event_json["tier_name"] = label
 
+    trace("HANDLER", level="STEP", tier=tier, name=label)
     if tier == 1:
-        return _tier_ambient(event_json, cfg, result)
+        out = _tier_ambient(event_json, cfg, result)
+        trace("DONE", level="OK", elapsed_s=round(time.monotonic() - started_at, 3),
+              actions=out.actions, errors=out.errors)
+        return out
     if tier == 2:
-        return _tier_notice(event_json, cfg, result)
+        out = _tier_notice(event_json, cfg, result)
+        trace("DONE", level="OK", elapsed_s=round(time.monotonic() - started_at, 3),
+              actions=out.actions, errors=out.errors)
+        return out
     if tier == 3:
         _tier_alert(event_json, cfg, result)
         _maybe_run_return_flow(event_json, cfg, result)
+        trace("DONE", level="OK", elapsed_s=round(time.monotonic() - started_at, 3),
+              actions=result.actions, errors=result.errors,
+              calls=len(result.calls), messages=len(result.messages))
         return result
     if tier == 4:
         _tier_emergency(event_json, cfg, result)
         _maybe_run_return_flow(event_json, cfg, result)
+        trace("DONE", level="OK", elapsed_s=round(time.monotonic() - started_at, 3),
+              actions=result.actions, errors=result.errors,
+              calls=len(result.calls), messages=len(result.messages))
         return result
 
     result.errors.append(f"unknown tier: {tier}")
+    trace("DONE", level="ERR", elapsed_s=round(time.monotonic() - started_at, 3),
+          errors=result.errors)
     return result
 
 
@@ -401,9 +455,12 @@ def _tier_alert(event: Dict[str, Any], cfg: Config, result: ActionResult) -> Act
 
 
 def _tier_emergency(event: Dict[str, Any], cfg: Config, result: ActionResult) -> ActionResult:
+    trace("NARRATION_BEGIN", level="BEGIN", tier=4, source="claude" if cfg.use_claude else "static_template")
     script = generate_script(event, cfg)
     result.script = script
+    trace("SCRIPT", level="OK", chars=len(script), preview=script[:160])
     media_url = _try_synthesize(script, cfg, result, prefix="emergency_")
+    trace("MEDIA_URL", level="STEP", url=media_url, fallback_will_use_say=media_url is None)
     # Fan out iMessage in parallel with the calls. iMessage delivery is faster
     # than the call ringing so the team has the clip on their phones the moment
     # they pick up.
@@ -432,50 +489,142 @@ def _tier_emergency(event: Dict[str, Any], cfg: Config, result: ActionResult) ->
 
     if not targets:
         result.errors.append("no emergency contacts configured")
+        trace("CALLS_BEGIN", level="ERR", reason="no contacts configured")
         return result
 
+    trace(
+        "CALLS_BEGIN",
+        level="BEGIN",
+        n=len(targets),
+        targets=[f"{lbl}={num}" for lbl, num in targets],
+        media_url=media_url,
+    )
     with ThreadPoolExecutor(max_workers=len(targets)) as pool:
-        futures = {
-            pool.submit(_place_call_safe, num, script, media_url, cfg): label
-            for label, num in targets
-        }
+        futures = {}
+        for label, num in targets:
+            trace("CALL_SUBMIT", level="STEP", to=num, label=label,
+                  kind="play" if media_url else "say")
+            futures[pool.submit(_place_call_safe, num, script, media_url, cfg)] = (label, num)
         for fut in as_completed(futures):
-            label = futures[fut]
+            label, num = futures[fut]
             try:
                 call = fut.result()
                 if call:
                     result.calls.append(call)
                     result.actions.append(f"call_{label}")
+                    trace("CALL_OK", level="OK", to=num, label=label, sid=call.sid,
+                          dry_run=call.dry_run)
+                else:
+                    trace("CALL_NONE", level="WARN", to=num, label=label,
+                          reason="place_call_safe returned None")
             except Exception as exc:
                 log.exception("Emergency call to %s failed", label)
                 result.errors.append(f"call_{label}: {exc}")
+                trace_exception("CALL_ERR", exc, to=num, label=label)
+    trace("CALLS_DONE", level="OK", placed=len(result.calls), errors=len(result.errors))
     return result
 
 
 # ---- helpers --------------------------------------------------------------
 
 
+def _media_url_serves_file(media_url: str, timeout: float = 2.5) -> tuple[bool, str]:
+    """HEAD-probe the exact media URL Twilio is about to fetch.
+
+    A stale or wrong PUBLIC_BASE_URL is the #1 cause of "application error"
+    on Twilio Play calls: the host may be alive (ngrok forwarding, /health
+    returns JSON) but doesn't have OUR mp3 on disk — Twilio gets a 404
+    HTML page, can't parse it as audio, and aborts with the stock error
+    voice. Probing the specific file URL is the only way to catch this.
+
+    Returns (is_serveable, reason). Reason is empty on success, else a
+    short tag for the trace.
+    """
+    if not media_url or not media_url.lower().startswith(("http://", "https://")):
+        return False, "invalid_url"
+    low = media_url.lower()
+    if "127.0.0.1" in low or "localhost" in low:
+        return False, "localhost_unreachable_from_twilio"
+    try:
+        import requests
+        r = requests.head(media_url, timeout=timeout, allow_redirects=True)
+    except Exception as exc:
+        return False, f"head_exc:{type(exc).__name__}"
+    if r.status_code != 200:
+        return False, f"head_status:{r.status_code}"
+    ct = (r.headers.get("content-type") or "").lower()
+    if not any(token in ct for token in ("audio", "mpeg", "mp3", "octet-stream")):
+        return False, f"content_type:{ct or 'unknown'}"
+    return True, ""
+
+
 def _try_synthesize(
     script: str, cfg: Config, result: ActionResult, prefix: str = "alert_"
 ) -> Optional[str]:
     if not script:
+        trace("TTS_SKIP", level="WARN", reason="empty script")
         return None
     if not cfg.elevenlabs_play_enabled():
         if cfg.use_elevenlabs:
+            trace(
+                "TTS_SKIP",
+                level="WARN",
+                reason="elevenlabs_play_enabled() returned False",
+                use_elevenlabs=cfg.use_elevenlabs,
+                has_key=bool(cfg.elevenlabs_api_key),
+                public_base_url=cfg.public_base_url,
+                hint="public_base_url must not be localhost / 127.0.0.1 — Twilio fetches the MP3 from it",
+            )
             log.warning(
                 "USE_ELEVENLABS=true but <Play> disabled: need ELEVENLABS_API_KEY and "
                 "PUBLIC_BASE_URL reachable from the internet (not localhost). Using Twilio <Say>."
             )
+        else:
+            trace("TTS_SKIP", level="INFO", reason="use_elevenlabs=false; falling back to <Say>")
         return None
+    trace("TTS_BEGIN", level="BEGIN", voice_id=cfg.elevenlabs_voice_id,
+          model_id=cfg.elevenlabs_model_id, output_format=cfg.elevenlabs_output_format,
+          script_chars=len(script))
+    t0 = time.monotonic()
     try:
         path = synthesize_mp3(script, cfg)
+        size = path.stat().st_size if path.exists() else 0
         url = cfg.media_url(path.name)
-        result.media_url = url
-        return url
+        trace("TTS_OK", level="OK", file=path.name, bytes=size,
+              elapsed_s=round(time.monotonic() - t0, 3), media_url=url)
     except Exception as exc:
         log.warning("ElevenLabs synthesis failed; falling back to <Say>: %s", exc)
         result.errors.append(f"tts: {exc}")
+        trace_exception("TTS_ERR", exc, elapsed_s=round(time.monotonic() - t0, 3))
         return None
+
+    # Confirm the URL Twilio is about to fetch actually serves the mp3 we
+    # just wrote. Skip the probe in dry_run (test fixtures use unreachable
+    # hosts) — the dry_run code path doesn't actually call Twilio anyway.
+    if cfg.dry_run:
+        result.media_url = url
+        return url
+    probe_t0 = time.monotonic()
+    serveable, reason = _media_url_serves_file(url)
+    if not serveable:
+        path.unlink(missing_ok=True)
+        trace(
+            "MEDIA_UNREACHABLE",
+            level="ERR",
+            media_url=url,
+            reason=reason,
+            elapsed_s=round(time.monotonic() - probe_t0, 3),
+            hint=("Twilio would have hit this URL and gotten a non-audio response → "
+                  "'application error'. Falling back to <Say>. To get ElevenLabs voice, "
+                  "either run `ngrok http 8001` on this Mac and update PUBLIC_BASE_URL "
+                  "in .env, or set USE_ELEVENLABS=false."),
+        )
+        result.errors.append(f"media_unreachable:{reason}")
+        return None
+    trace("MEDIA_OK", level="OK", media_url=url,
+          elapsed_s=round(time.monotonic() - probe_t0, 3))
+    result.media_url = url
+    return url
 
 
 def _format_alert_sms_body(event: Dict[str, Any]) -> str:
@@ -494,10 +643,17 @@ def _format_alert_sms_body(event: Dict[str, Any]) -> str:
 
 
 def _send_sms_safe(to: str, body: str, cfg: Config) -> Optional[SmsResult]:
+    trace("SMS_SUBMIT", level="STEP", to=to, chars=len(body))
+    t0 = time.monotonic()
     try:
-        return send_sms(to, body, config=cfg)
-    except Exception:
+        sms = send_sms(to, body, config=cfg)
+        trace("SMS_OK", level="OK", to=to, sid=sms.sid, dry_run=sms.dry_run,
+              elapsed_s=round(time.monotonic() - t0, 3))
+        return sms
+    except Exception as exc:
         log.exception("SMS to %s failed", to)
+        trace_exception("SMS_ERR", exc, to=to,
+                        elapsed_s=round(time.monotonic() - t0, 3))
         raise
 
 
@@ -525,15 +681,37 @@ def _place_call_safe(
     media_url: Optional[str],
     cfg: Config,
 ) -> Optional[CallResult]:
+    t0 = time.monotonic()
     if media_url:
-        return place_call_play(
-            to,
-            media_url,
-            fallback_text=script,
-            config=cfg,
-        )
+        trace("TWILIO_CALL_BEGIN", level="BEGIN", to=to, mode="play",
+              media_url=media_url, fallback_chars=len(script or ""))
+        try:
+            call = place_call_play(to, media_url, fallback_text=script, config=cfg)
+            trace("TWILIO_CALL_OK", level="OK", to=to, sid=call.sid,
+                  dry_run=call.dry_run, twiml_chars=len(call.twiml),
+                  elapsed_s=round(time.monotonic() - t0, 3))
+            return call
+        except Exception as exc:
+            trace_exception("TWILIO_CALL_ERR", exc, to=to, mode="play",
+                            elapsed_s=round(time.monotonic() - t0, 3),
+                            hint="If 'application error' rings: PUBLIC_BASE_URL likely not Twilio-reachable, "
+                                 "or the MP3 isn't being served at that URL.")
+            raise
     if script:
-        return place_call_say(to, script, config=cfg)
+        trace("TWILIO_CALL_BEGIN", level="BEGIN", to=to, mode="say",
+              script_chars=len(script))
+        try:
+            call = place_call_say(to, script, config=cfg)
+            trace("TWILIO_CALL_OK", level="OK", to=to, sid=call.sid,
+                  dry_run=call.dry_run, twiml_chars=len(call.twiml),
+                  elapsed_s=round(time.monotonic() - t0, 3))
+            return call
+        except Exception as exc:
+            trace_exception("TWILIO_CALL_ERR", exc, to=to, mode="say",
+                            elapsed_s=round(time.monotonic() - t0, 3))
+            raise
+    trace("TWILIO_CALL_SKIP", level="WARN", to=to,
+          reason="no media_url and no script")
     return None
 
 
@@ -598,9 +776,11 @@ def _fanout_imessage(
     the primary signal path; iMessage is a parallel best-effort channel.
     """
     if not cfg.imessage_enabled:
+        trace("IMSG_SKIP", level="INFO", reason="IMESSAGE_ENABLED=false")
         return
     recipients = _imessage_recipient_union(cfg)
     if not recipients:
+        trace("IMSG_SKIP", level="WARN", reason="union of phone slots is empty")
         log.info("iMessage enabled but no recipients across all phone slots — skipping")
         return
 
@@ -610,9 +790,18 @@ def _fanout_imessage(
         # vision_pipeline writes paths as './media/clip_inc_...mp4' relative to
         # CWD. Resolve so AppleScript gets an absolute path.
         from pathlib import Path as _Path
-        attachment = str(_Path(attachment).expanduser().resolve())
+        resolved = _Path(attachment).expanduser().resolve()
+        if not resolved.exists():
+            trace("IMSG_ATTACH_MISSING", level="WARN",
+                  given=str(attachment), resolved=str(resolved),
+                  hint="text-only fan-out will still happen, but no image will attach")
+        attachment = str(resolved)
+
+    trace("IMSG_BEGIN", level="BEGIN", n=len(recipients), recipients=recipients,
+          attachment=attachment, label=label, body_chars=len(body))
 
     if cfg.dry_run:
+        trace("IMSG_DRYRUN", level="INFO", n=len(recipients), preview=body[:140])
         log.info(
             "[dry_run] would iMessage %d recipients (%s): %s%s",
             len(recipients),
@@ -623,7 +812,9 @@ def _fanout_imessage(
         result.actions.append(f"imessage_dry_run_{label}")
         return
 
+    t0 = time.monotonic()
     msgs = send_imessage_fanout(recipients, body, attachment=attachment)
+    elapsed = round(time.monotonic() - t0, 3)
     result.messages.extend(
         SmsResult(to=m.to, sid="imessage", body=body, dry_run=False)
         for m in msgs
@@ -631,6 +822,15 @@ def _fanout_imessage(
     )
     sent_count = sum(1 for m in msgs if m.sent)
     fail_count = len(msgs) - sent_count
+    for m in msgs:
+        if m.sent:
+            trace("IMSG_OK", level="OK", to=m.to,
+                  attachment_sent=m.attachment_sent,
+                  attachment_error=m.error if m.error else None)
+        else:
+            trace("IMSG_ERR", level="ERR", to=m.to, error=m.error)
+    trace("IMSG_DONE", level="OK" if fail_count == 0 else "WARN",
+          sent=sent_count, failed=fail_count, total=len(msgs), elapsed_s=elapsed)
     if sent_count:
         result.actions.append(f"imessage_{sent_count}/{len(msgs)}")
     if fail_count:
