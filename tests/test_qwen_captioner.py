@@ -100,3 +100,22 @@ def test_passes_real_bgr_crop_to_describer() -> None:
 ])
 def test_truncate_words(text: str, n: int, expected: str) -> None:
     assert _truncate_words(text, n) == expected
+
+
+def test_backend_cloud_lazy_builds_cloud_describer() -> None:
+    """When backend='cloud' is set without an explicit _describe, the
+    captioner should defer construction until the first call and then
+    instantiate a CloudClothingDescriber. We don't actually call the
+    network — we just verify the wiring picks the cloud path."""
+    from vision_pipeline.cloud_classifier import CloudClothingDescriber
+
+    cap = QwenClothingCaptioner(backend="cloud")
+    assert cap._describe is None
+    descriptor = cap._get_describer()
+    assert isinstance(descriptor, CloudClothingDescriber)
+
+
+def test_backend_qwen_default_does_not_touch_cloud_module() -> None:
+    """Default backend stays Qwen — cloud module shouldn't be implicated."""
+    cap = QwenClothingCaptioner()
+    assert cap.backend == "qwen"

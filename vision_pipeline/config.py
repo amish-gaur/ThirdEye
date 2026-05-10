@@ -82,6 +82,17 @@ class Config:
     qwen_min_pixels: int = _int("QWEN_MIN_PIXELS", 256 * 28 * 28)
     qwen_max_pixels: int = _int("QWEN_MAX_PIXELS", 512 * 28 * 28)
     qwen_frame_max_edge: int = _int("QWEN_FRAME_MAX_EDGE", 512)
+
+    # VLM backend dispatch. "qwen" loads Qwen2-VL-2B-Instruct locally (needs
+    # ~5GB VRAM on MPS/CUDA). "cloud" calls Anthropic Claude on trigger so
+    # teammates on laptops without strong GPUs can still run the pipeline —
+    # the rule-based theft tracker gates the call, so cost stays trivial.
+    classifier_backend: str = _str("CLASSIFIER_BACKEND", "qwen")
+    cloud_classifier_model: str = _str("CLOUD_CLASSIFIER_MODEL", "claude-haiku-4-5")
+    cloud_classifier_max_tokens: int = _int("CLOUD_CLASSIFIER_MAX_TOKENS", 400)
+    cloud_classifier_max_edge: int = _int("CLOUD_CLASSIFIER_MAX_EDGE", 768)
+    cloud_classifier_jpeg_quality: int = _int("CLOUD_CLASSIFIER_JPEG_QUALITY", 80)
+    cloud_classifier_timeout_seconds: float = _float("CLOUD_CLASSIFIER_TIMEOUT_SECONDS", 12.0)
     classification_cooldown_seconds: float = _float(
         "CLASSIFICATION_COOLDOWN_SECONDS", 8.0
     )

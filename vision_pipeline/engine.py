@@ -804,31 +804,52 @@ class VisionEngine:
 
         self.processor = None
         self.qwen = None
+        self.cloud_classifier = None
+        self._classifier_backend = (config.classifier_backend or "qwen").lower()
         if not self.config.mock_classifier:
-            self.processor = AutoProcessor.from_pretrained(
-                config.qwen_model,
-                min_pixels=config.qwen_min_pixels,
-                max_pixels=config.qwen_max_pixels,
-            )
-            self.qwen = Qwen2VLForConditionalGeneration.from_pretrained(
-                config.qwen_model,
-                torch_dtype=torch.float16,
-            )
-            self.qwen = self.qwen.to(self.device)
-            self.qwen.eval()
+            if self._classifier_backend == "cloud":
+                # Cloud backend: zero local weights to load. Build a thin
+                # client object lazily — first .classify() call constructs
+                # the SDK client, validates the API key, and raises a
+                # clear error if either is missing.
+                from .cloud_classifier import CloudHeavyClassifier
+
+                self.cloud_classifier = CloudHeavyClassifier(
+                    model=config.cloud_classifier_model,
+                    max_tokens=config.cloud_classifier_max_tokens,
+                    max_edge=config.cloud_classifier_max_edge,
+                    jpeg_quality=config.cloud_classifier_jpeg_quality,
+                    timeout_seconds=config.cloud_classifier_timeout_seconds,
+                )
+            else:
+                self.processor = AutoProcessor.from_pretrained(
+                    config.qwen_model,
+                    min_pixels=config.qwen_min_pixels,
+                    max_pixels=config.qwen_max_pixels,
+                )
+                self.qwen = Qwen2VLForConditionalGeneration.from_pretrained(
+                    config.qwen_model,
+                    torch_dtype=torch.float16,
+                )
+                self.qwen = self.qwen.to(self.device)
+                self.qwen.eval()
             self.worker_thread = threading.Thread(
                 target=self._classification_worker,
-                name="qwen-classifier",
+                name="vlm-classifier",
                 daemon=True,
             )
             self.worker_thread.start()
+        if self._classifier_backend == "cloud":
+            classifier_label = f"cloud:{self.config.cloud_classifier_model}"
+        else:
+            classifier_label = f"qwen:{self.config.qwen_model}"
         log.info(
-            "Vision engine ready device=%s source=%r yolo=%s qwen=%s capture=%sx%s "
+            "Vision engine ready device=%s source=%r yolo=%s classifier=%s capture=%sx%s "
             "person_conf=%s carryable_conf=%s zone=%s demo_bias=%s mock=%s post=%s overlay=%s artifacts=%s",
             self.device,
             self.source,
             self.config.yolo_model,
-            self.config.qwen_model,
+            classifier_label,
             self.config.capture_width,
             self.config.capture_height,
             self.config.person_confidence,
@@ -1253,6 +1274,30 @@ class VisionEngine:
                 }
             )
             result = evaluate_classifier_output(raw_answer, time_elapsed_seconds)
+            return result.payload, raw_answer
+
+        # Cloud backend: ship the most recent N frames to Claude. The
+        # rule-based theft tracker has already gated us here, so paying a
+        # cloud round-trip for the actual classification is fine — and
+        # frees teammates on weak laptops from hosting Qwen weights.
+        if self._classifier_backend == "cloud" and self.cloud_classifier is not None:
+            try:
+                raw_answer = self.cloud_classifier.classify(
+                    list(frames_bgr), VISION_LANGUAGE_PROMPT,
+                ).strip()
+            except Exception as exc:
+                log.warning("cloud classifier call failed: %s", exc)
+                return None, ""
+            result = evaluate_classifier_output(raw_answer, time_elapsed_seconds)
+            if not result.ok:
+                log.warning(
+                    "cloud classifier output rejected [%s]: %s | raw=%r",
+                    result.status,
+                    result.reason,
+                    raw_answer,
+                )
+            elif result.status == "degrade":
+                log.info("cloud classifier output degraded to tier 1: %s", result.reason)
             return result.payload, raw_answer
 
         # Multi-frame: downscale each, build a multi-image content block.
