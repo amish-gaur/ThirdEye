@@ -1,0 +1,43 @@
+{
+  "kind": "near_miss",
+  "timestamp": 1778383076.0163069,
+  "frame_seq": 102,
+  "state": "CANDIDATE",
+  "cues": [
+    "person_in_zone",
+    "carryable_present:cell phone",
+    "person_carryable_pair"
+  ],
+  "suppression_active": false,
+  "persons": [
+    {
+      "conf": 0.8787911534309387,
+      "box": [
+        327.169677734375,
+        1.300872802734375,
+        638.9755859375,
+        343.640869140625
+      ]
+    }
+  ],
+  "carryables": [
+    {
+      "label": "cell phone",
+      "conf": 0.7427995800971985,
+      "box": [
+        188.72537231445312,
+        320.21533203125,
+        367.8421325683594,
+        390.652099609375
+      ]
+    }
+  ],
+  "candidate": {
+    "first_seen_at": 1778383075.489894,
+    "last_seen_at": 1778383075.87638,
+    "interaction_frames": 4,
+    "recent_zone_dwell": 0.5603399276733398,
+    "last_carryable_label": "cell phone",
+    "alert_fired": false
+  }
+}

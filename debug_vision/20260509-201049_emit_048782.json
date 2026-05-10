@@ -1,0 +1,20 @@
+{
+  "kind": "emit",
+  "timestamp": 1778382649.047523,
+  "frame_seq": 65,
+  "state": "CANDIDATE",
+  "cues": [
+    "carryable_removed:cell phone"
+  ],
+  "suppression_active": true,
+  "persons": [],
+  "carryables": [],
+  "candidate": {
+    "first_seen_at": 1778382643.927688,
+    "last_seen_at": 1778382648.989598,
+    "interaction_frames": 34,
+    "recent_zone_dwell": 3.5380337238311768,
+    "last_carryable_label": "cell phone",
+    "alert_fired": true
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "kind": "near_miss",
+  "timestamp": 1778374268.18451,
+  "frame_seq": 476,
+  "state": "CANDIDATE",
+  "cues": [
+    "carryable_present:backpack",
+    "person_carryable_pair"
+  ],
+  "suppression_active": false,
+  "persons": [
+    {
+      "conf": 0.8674322962760925,
+      "box": [
+        516.6363525390625,
+        0.999237060546875,
+        639.4000244140625,
+        451.3891296386719
+      ]
+    }
+  ],
+  "carryables": [
+    {
+      "label": "backpack",
+      "conf": 0.5326699018478394,
+      "box": [
+        199.22332763671875,
+        225.05950927734375,
+        422.141845703125,
+        454.91455078125
+      ]
+    },
+    {
+      "label": "suitcase",
+      "conf": 0.38871678709983826,
+      "box": [
+        200.1803741455078,
+        222.8746337890625,
+        401.62213134765625,
+        452.45361328125
+      ]
+    }
+  ],
+  "candidate": {
+    "first_seen_at": 1778374267.208064,
+    "last_seen_at": 1778374267.296062,
+    "interaction_frames": 2,
+    "recent_zone_dwell": 0.16967201232910156,
+    "last_carryable_label": "backpack",
+    "alert_fired": false
+  }
+}

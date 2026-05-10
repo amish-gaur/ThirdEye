@@ -1,0 +1,43 @@
+{
+  "kind": "emit_dropped",
+  "timestamp": 1778389648.818621,
+  "frame_seq": 1142,
+  "state": "CANDIDATE",
+  "cues": [
+    "person_in_zone",
+    "carryable_present:cell phone",
+    "person_carryable_pair"
+  ],
+  "suppression_active": true,
+  "persons": [
+    {
+      "conf": 0.9021625518798828,
+      "box": [
+        0.0714111328125,
+        79.89337158203125,
+        610.06201171875,
+        479.26556396484375
+      ]
+    }
+  ],
+  "carryables": [
+    {
+      "label": "cell phone",
+      "conf": 0.8057577610015869,
+      "box": [
+        461.11932373046875,
+        291.82696533203125,
+        507.44500732421875,
+        366.4239501953125
+      ]
+    }
+  ],
+  "candidate": {
+    "first_seen_at": 1778389648.449777,
+    "last_seen_at": 1778389648.7071848,
+    "interaction_frames": 3,
+    "recent_zone_dwell": 0.3836958408355713,
+    "last_carryable_label": "cell phone",
+    "alert_fired": true
+  }
+}

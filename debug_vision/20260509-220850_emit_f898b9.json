@@ -1,0 +1,43 @@
+{
+  "kind": "emit",
+  "timestamp": 1778389730.0511029,
+  "frame_seq": 105,
+  "state": "CANDIDATE",
+  "cues": [
+    "person_in_zone",
+    "carryable_present:backpack",
+    "person_carryable_pair"
+  ],
+  "suppression_active": true,
+  "persons": [
+    {
+      "conf": 0.8282400965690613,
+      "box": [
+        0.26806640625,
+        0.60955810546875,
+        255.92657470703125,
+        346.3421630859375
+      ]
+    }
+  ],
+  "carryables": [
+    {
+      "label": "backpack",
+      "conf": 0.42351365089416504,
+      "box": [
+        270.58636474609375,
+        248.79672241210938,
+        445.98138427734375,
+        382.2884216308594
+      ]
+    }
+  ],
+  "candidate": {
+    "first_seen_at": 1778389729.5892348,
+    "last_seen_at": 1778389730.022603,
+    "interaction_frames": 4,
+    "recent_zone_dwell": 0.3852722644805908,
+    "last_carryable_label": "backpack",
+    "alert_fired": true
+  }
+}

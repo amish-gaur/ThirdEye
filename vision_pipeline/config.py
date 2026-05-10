@@ -95,6 +95,7 @@ class Config:
     carryable_confidence: float = _float("CARRYABLE_CONFIDENCE", 0.25)
     post_timeout_seconds: float = _float("POST_TIMEOUT_SECONDS", 10.0)
     post_events: bool = _bool("POST_EVENTS", True)
+    event_queue_size: int = _int("EVENT_QUEUE_SIZE", 16)
     show_window: bool = _bool("SHOW_WINDOW", True)
     mock_classifier: bool = _bool("MOCK_CLASSIFIER", False)
 
@@ -103,6 +104,7 @@ class Config:
     debug_detections: bool = _bool("DEBUG_DETECTIONS", False)
     save_failure_artifacts: bool = _bool("SAVE_FAILURE_ARTIFACTS", False)
     debug_artifact_dir: str = _str("DEBUG_ARTIFACT_DIR", "./debug_vision")
+    artifact_queue_size: int = _int("ARTIFACT_QUEUE_SIZE", 16)
 
     # Entry zone, normalized [0,1] coordinates: x1, y1, x2, y2
     entry_zone: tuple[float, float, float, float] = _zone(
@@ -115,6 +117,26 @@ class Config:
     carryable_labels: tuple[str, ...] = _label_set(
         "CARRYABLE_LABELS", ("backpack", "handbag", "suitcase", "laptop", "cell phone")
     )
+
+    # Cardboard package detection. COCO YOLO models usually do not expose a
+    # "cardboard box" class. Package-theft mode can use YOLO-World for an
+    # open-vocabulary cardboard-box prompt, with the OpenCV color/shape detector
+    # kept as a fallback backend.
+    cardboard_box_enable: bool = _bool("CARDBOARD_BOX_ENABLE", True)
+    cardboard_detector_backend: str = _str("CARDBOARD_DETECTOR_BACKEND", "opencv")
+    yolo_world_model: str = _str("YOLO_WORLD_MODEL", "yolov8s-world.pt")
+    yolo_world_input_size: int = _int("YOLO_WORLD_INPUT_SIZE", 640)
+    yolo_world_confidence: float = _float("YOLO_WORLD_CONFIDENCE", 0.10)
+    yolo_world_cardboard_classes: tuple[str, ...] = _label_set(
+        "YOLO_WORLD_CARDBOARD_CLASSES", ("cardboard box", "shipping box")
+    )
+    cardboard_box_min_area_ratio: float = _float("CARDBOARD_BOX_MIN_AREA_RATIO", 0.006)
+    cardboard_box_max_area_ratio: float = _float("CARDBOARD_BOX_MAX_AREA_RATIO", 0.25)
+    cardboard_box_min_extent: float = _float("CARDBOARD_BOX_MIN_EXTENT", 0.45)
+    cardboard_box_min_confidence: float = _float("CARDBOARD_BOX_MIN_CONFIDENCE", 0.32)
+    cardboard_box_edge_margin_ratio: float = _float("CARDBOARD_BOX_EDGE_MARGIN_RATIO", 0.005)
+    cardboard_box_floor_min_y_ratio: float = _float("CARDBOARD_BOX_FLOOR_MIN_Y_RATIO", 0.60)
+    cardboard_box_min_score: float = _float("CARDBOARD_BOX_MIN_SCORE", 0.16)
 
     # Behavior tuning
     interaction_frames_required: int = _int("INTERACTION_FRAMES_REQUIRED", 4)

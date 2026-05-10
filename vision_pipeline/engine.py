@@ -31,6 +31,11 @@ from PIL import Image
 from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
 from ultralytics import YOLO
 
+try:  # YOLO-World is present in recent Ultralytics builds.
+    from ultralytics import YOLOWorld
+except ImportError:  # pragma: no cover - depends on the installed ultralytics version
+    YOLOWorld = None
+
 from .config import CONFIG, Config
 from .events import VISION_LANGUAGE_PROMPT, build_event, evaluate_classifier_output
 from .publisher import post_event
@@ -92,6 +97,17 @@ class ClassificationRequest:
 
 
 @dataclass
+class ArtifactRequest:
+    kind: str
+    timestamp: float
+    frame_seq: int
+    frame_bgr: Any
+    decision: "BehaviorDecision"
+    persons: list["Detection"]
+    carryables: list["Detection"]
+
+
+@dataclass
 class Detection:
     cls_id: int
     label: str
@@ -137,6 +153,8 @@ class BehaviorDecision:
     candidate: CandidateContext | None
     person_boxes: list[Detection]
     carryable_boxes: list[Detection]
+    package_anchor_label: str | None = None
+    package_anchor_box: tuple[float, float, float, float] | None = None
     near_miss: bool = False  # for failure-artifact saving
 
 
@@ -606,6 +624,8 @@ _TIER_COLORS = {
     3: (0, 140, 255),    # orange
     4: (0, 0, 255),      # red
 }
+_CARRYABLE_BOX_COLOR = (255, 80, 220)
+_CARDBOARD_BOX_COLOR = (255, 0, 255)
 
 
 def _draw_overlay(
@@ -640,7 +660,12 @@ def _draw_overlay(
     for det in decision.carryable_boxes:
         is_candidate = cand_carryable_box is not None and _box_iou(det.box, cand_carryable_box) > 0.3
         thickness = 3 if is_candidate else 2
-        _draw_box(frame_bgr, det, color=(255, 80, 220), thickness=thickness)
+        color = (
+            _CARDBOARD_BOX_COLOR
+            if det.label.strip().lower() == "cardboard box"
+            else _CARRYABLE_BOX_COLOR
+        )
+        _draw_box(frame_bgr, det, color=color, thickness=thickness)
 
     # Top-left status text
     lines = [
@@ -717,12 +742,29 @@ def _truncate_for_overlay(text: str, max_chars: int) -> str:
 
 
 def _draw_box(frame_bgr: Any, det: Detection, *, color: tuple[int, int, int], thickness: int) -> None:
-    x1, y1, x2, y2 = (int(v) for v in det.box)
+    h, w = frame_bgr.shape[:2]
+    x1, y1, x2, y2 = (int(round(v)) for v in det.box)
+    x1 = min(max(0, x1), max(0, w - 1))
+    x2 = min(max(0, x2), max(0, w - 1))
+    y1 = min(max(0, y1), max(0, h - 1))
+    y2 = min(max(0, y2), max(0, h - 1))
+    if x2 <= x1 or y2 <= y1:
+        return
     cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), color, thickness)
     label = f"{det.label} {det.confidence:.2f}"
     (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-    cv2.rectangle(frame_bgr, (x1, y1 - th - 6), (x1 + tw + 6, y1), color, -1)
-    cv2.putText(frame_bgr, label, (x1 + 3, y1 - 4),
+    label_w = min(tw + 6, w)
+    label_x1 = min(max(0, x1), max(0, w - label_w))
+    label_y2 = y1
+    label_y1 = y1 - th - 6
+    if label_y1 < 0:
+        label_y1 = y1
+        label_y2 = min(h - 1, y1 + th + 6)
+        text_y = min(h - 4, y1 + th + 2)
+    else:
+        text_y = y1 - 4
+    cv2.rectangle(frame_bgr, (label_x1, label_y1), (label_x1 + label_w, label_y2), color, -1)
+    cv2.putText(frame_bgr, label, (label_x1 + 3, text_y),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
 
 
@@ -736,6 +778,8 @@ def _empty_decision() -> BehaviorDecision:
         candidate=None,
         person_boxes=[],
         carryable_boxes=[],
+        package_anchor_label=None,
+        package_anchor_box=None,
         near_miss=False,
     )
 
@@ -756,9 +800,17 @@ class VisionEngine:
         self.classification_queue: queue.Queue[ClassificationRequest | None] = queue.Queue(
             maxsize=1
         )
+        self.publish_queue: queue.Queue[dict[str, Any] | None] = queue.Queue(
+            maxsize=max(1, int(config.event_queue_size))
+        )
+        self.artifact_queue: queue.Queue[ArtifactRequest | None] = queue.Queue(
+            maxsize=max(1, int(config.artifact_queue_size))
+        )
         self.classification_in_flight = False
         self.state_lock = threading.Lock()
         self.worker_thread: threading.Thread | None = None
+        self.publisher_thread: threading.Thread | None = None
+        self.artifact_thread: threading.Thread | None = None
         self.capture_thread: threading.Thread | None = None
         self.processing_thread: threading.Thread | None = None
         self.run_event = threading.Event()
@@ -788,10 +840,15 @@ class VisionEngine:
         # Throttle for "why didn't this fire" debug log so we don't spam.
         self._last_fire_block_log_at: float = 0.0
         self._router_url_warned = False
+        self.yolo_world = None
+        self._cardboard_backend_active = self._normalize_cardboard_backend(
+            config.cardboard_detector_backend
+        )
 
         self.yolo = YOLO(config.yolo_model)
         self.yolo.to(self.device)
         self._monitored_class_ids = self._resolve_monitored_class_ids()
+        self._init_cardboard_detector()
 
         self.processor = None
         self.qwen = None
@@ -813,9 +870,23 @@ class VisionEngine:
                 daemon=True,
             )
             self.worker_thread.start()
+        if self.config.post_events:
+            self.publisher_thread = threading.Thread(
+                target=self._publisher_worker,
+                name="event-publisher",
+                daemon=True,
+            )
+            self.publisher_thread.start()
+        if self.config.save_failure_artifacts:
+            self.artifact_thread = threading.Thread(
+                target=self._artifact_worker,
+                name="artifact-writer",
+                daemon=True,
+            )
+            self.artifact_thread.start()
         log.info(
             "Vision engine ready device=%s source=%r yolo=%s qwen=%s capture=%sx%s "
-            "person_conf=%s carryable_conf=%s zone=%s demo_bias=%s mock=%s post=%s overlay=%s artifacts=%s",
+            "person_conf=%s carryable_conf=%s zone=%s cardboard=%s demo_bias=%s mock=%s post=%s overlay=%s artifacts=%s",
             self.device,
             self.source,
             self.config.yolo_model,
@@ -825,12 +896,58 @@ class VisionEngine:
             self.config.person_confidence,
             self.config.carryable_confidence,
             self.config.entry_zone,
+            self._cardboard_backend_active,
             self.config.demo_mode_theft_bias,
             self.config.mock_classifier,
             self.config.post_events,
             self.config.debug_overlay,
             self.config.save_failure_artifacts,
         )
+
+    @staticmethod
+    def _normalize_cardboard_backend(raw: str) -> str:
+        backend = (raw or "opencv").strip().lower().replace("-", "_")
+        if backend in {"world", "yoloworld", "yolo_world"}:
+            return "yolo_world"
+        if backend in {"cv", "opencv", "color", "color_shape"}:
+            return "opencv"
+        if backend in {"auto", "off"}:
+            return backend
+        log.warning("Unknown CARDBOARD_DETECTOR_BACKEND=%r; using opencv", raw)
+        return "opencv"
+
+    def _init_cardboard_detector(self) -> None:
+        if not self.config.cardboard_box_enable:
+            self._cardboard_backend_active = "off"
+            return
+        if self._cardboard_backend_active not in {"yolo_world", "auto"}:
+            return
+        if YOLOWorld is None:
+            log.warning("YOLO-World is unavailable in this Ultralytics install.")
+            self._cardboard_backend_active = (
+                "opencv" if self._cardboard_backend_active == "auto" else "off"
+            )
+            return
+
+        classes = [label.strip() for label in self.config.yolo_world_cardboard_classes if label.strip()]
+        if not classes:
+            classes = ["cardboard box"]
+        try:
+            self.yolo_world = YOLOWorld(self.config.yolo_world_model)
+            self.yolo_world.set_classes(classes)
+            self.yolo_world.to(self.device)
+            self._cardboard_backend_active = "yolo_world"
+            log.info(
+                "YOLO-World cardboard detector ready model=%s classes=%s",
+                self.config.yolo_world_model,
+                classes,
+            )
+        except Exception as exc:  # pragma: no cover - network/model availability varies
+            log.warning("Could not initialize YOLO-World cardboard detector: %s", exc)
+            self.yolo_world = None
+            self._cardboard_backend_active = (
+                "opencv" if self._cardboard_backend_active == "auto" else "off"
+            )
 
     # ---------------------------------------------------------------------
     # Capture loop
@@ -905,6 +1022,7 @@ class VisionEngine:
             if self.show_window:
                 cv2.destroyAllWindows()
             self._stop_worker()
+            self._stop_background_workers()
 
     # ---------------------------------------------------------------------
     # Detection helpers
@@ -978,6 +1096,12 @@ class VisionEngine:
                 )
 
             should_fire = theft_decision.should_emit
+            if should_fire and self._should_suppress_duplicate_theft_emit():
+                log.info(
+                    "Suppressing duplicate theft emit for active incident %s",
+                    self._active_incident_id,
+                )
+                should_fire = False
 
             if not should_fire and persons:
                 self._log_fire_block(
@@ -1101,6 +1225,15 @@ class VisionEngine:
         self, frame_bgr: Any
     ) -> tuple[list[Detection], list[Detection]]:
         """Run YOLO once at the lower threshold and post-filter per class."""
+        persons: list[Detection] = []
+        carryables: list[Detection] = []
+        if hasattr(frame_bgr, "shape") and len(frame_bgr.shape) >= 2:
+            frame_h, frame_w = frame_bgr.shape[:2]
+        else:
+            frame_h, frame_w = self.config.capture_height, self.config.capture_width
+        frame_size = (frame_w, frame_h)
+        frame_area = float(frame_w * frame_h)
+
         lower_conf = min(self.config.person_confidence, self.config.carryable_confidence)
         imgsz = self._active_yolo_input_size()
         results = self.yolo.predict(
@@ -1112,29 +1245,27 @@ class VisionEngine:
             verbose=False,
         )
         if not results:
-            return [], []
+            return persons, self._append_cardboard_boxes(
+                frame_bgr, frame_size=frame_size, persons=persons, carryables=carryables
+            )
 
         result = results[0]
         names = result.names
         boxes = result.boxes
         if boxes is None or len(boxes) == 0:
-            return [], []
+            return persons, self._append_cardboard_boxes(
+                frame_bgr, frame_size=frame_size, persons=persons, carryables=carryables
+            )
 
         cls_list = boxes.cls.tolist()
         try:
             conf_list = boxes.conf.tolist()
             xyxy_list = boxes.xyxy.tolist()
         except AttributeError:
-            return [], []
+            return persons, self._append_cardboard_boxes(
+                frame_bgr, frame_size=frame_size, persons=persons, carryables=carryables
+            )
 
-        persons: list[Detection] = []
-        carryables: list[Detection] = []
-        if hasattr(frame_bgr, "shape") and len(frame_bgr.shape) >= 2:
-            frame_h, frame_w = frame_bgr.shape[:2]
-        else:
-            frame_h, frame_w = self.config.capture_height, self.config.capture_width
-        frame_size = (frame_w, frame_h)
-        frame_area = float(frame_w * frame_h)
         for cls_id, conf, xyxy in zip(cls_list, conf_list, xyxy_list):
             cls_id = int(cls_id)
             label = str(names.get(cls_id, str(cls_id))) if hasattr(names, "get") else str(names[cls_id])
@@ -1146,6 +1277,9 @@ class VisionEngine:
             elif self._normalize_monitored_label(label) in self._carryable_label_set:
                 if self._allow_carryable_detection(det, frame_bgr=frame_bgr, frame_size=frame_size):
                     carryables.append(det)
+        carryables = self._append_cardboard_boxes(
+            frame_bgr, frame_size=frame_size, persons=persons, carryables=carryables
+        )
         return persons, carryables
 
     def _active_yolo_input_size(self) -> int:
@@ -1199,6 +1333,8 @@ class VisionEngine:
             candidate=None,
             person_boxes=persons,
             carryable_boxes=carryables,
+            package_anchor_label=theft_decision.anchor_label,
+            package_anchor_box=theft_decision.anchor_box,
             near_miss=False,
         )
 
@@ -1282,6 +1418,266 @@ class VisionEngine:
         if _touches_frame_edge(det.box, frame_size, self.config.edge_margin_ratio):
             return False
         return True
+
+    def _append_cardboard_boxes(
+        self,
+        frame_bgr: Any,
+        *,
+        frame_size: tuple[int, int],
+        persons: list[Detection],
+        carryables: list[Detection],
+    ) -> list[Detection]:
+        cardboard = self._detect_cardboard_boxes(
+            frame_bgr,
+            frame_size=frame_size,
+            persons=persons,
+        )
+        if not cardboard:
+            return carryables
+        merged = list(carryables)
+        for det in cardboard:
+            if any(_box_iou(det.box, existing.box) > 0.35 for existing in merged):
+                continue
+            merged.append(det)
+        return merged
+
+    def _detect_cardboard_boxes(
+        self,
+        frame_bgr: Any,
+        *,
+        frame_size: tuple[int, int],
+        persons: list[Detection] | None = None,
+    ) -> list[Detection]:
+        if not self.config.cardboard_box_enable:
+            return []
+        if not hasattr(frame_bgr, "shape") or len(frame_bgr.shape) < 2:
+            return []
+        if self._cardboard_backend_active == "yolo_world":
+            return self._detect_cardboard_boxes_yolo_world(
+                frame_bgr,
+                frame_size=frame_size,
+                persons=persons,
+            )
+        if self._cardboard_backend_active == "off":
+            return []
+        return self._detect_cardboard_boxes_opencv(
+            frame_bgr,
+            frame_size=frame_size,
+            persons=persons,
+        )
+
+    def _detect_cardboard_boxes_yolo_world(
+        self,
+        frame_bgr: Any,
+        *,
+        frame_size: tuple[int, int],
+        persons: list[Detection] | None = None,
+    ) -> list[Detection]:
+        if self.yolo_world is None:
+            return []
+        try:
+            results = self.yolo_world.predict(
+                source=frame_bgr,
+                conf=float(self.config.yolo_world_confidence),
+                device=self.device,
+                imgsz=max(64, int(self.config.yolo_world_input_size)),
+                verbose=False,
+            )
+        except Exception as exc:
+            log.warning("YOLO-World cardboard inference failed: %s", exc)
+            return []
+        if not results:
+            return []
+        boxes = results[0].boxes
+        if boxes is None or len(boxes) == 0:
+            return []
+        try:
+            conf_list = boxes.conf.tolist()
+            xyxy_list = boxes.xyxy.tolist()
+        except AttributeError:
+            return []
+
+        candidates: list[Detection] = []
+        for conf, xyxy in zip(conf_list, xyxy_list):
+            box = (float(xyxy[0]), float(xyxy[1]), float(xyxy[2]), float(xyxy[3]))
+            det = Detection(
+                cls_id=-200,
+                label="cardboard box",
+                confidence=float(conf),
+                box=box,
+            )
+            if self._allow_yolo_world_cardboard_detection(
+                det,
+                frame_size=frame_size,
+                persons=persons or [],
+            ):
+                candidates.append(det)
+
+        candidates.sort(key=lambda det: det.confidence, reverse=True)
+        return candidates[:1]
+
+    def _allow_yolo_world_cardboard_detection(
+        self,
+        det: Detection,
+        *,
+        frame_size: tuple[int, int],
+        persons: list[Detection],
+    ) -> bool:
+        if det.confidence < float(self.config.yolo_world_confidence):
+            return False
+        if self.config.use_entry_zone and not _point_in_zone(
+            _box_center(det.box), self.config.entry_zone, frame_size
+        ):
+            return False
+        frame_w, frame_h = frame_size
+        area_ratio = _box_area(det.box) / max(float(frame_w * frame_h), 1.0)
+        if area_ratio < float(self.config.cardboard_box_min_area_ratio):
+            return False
+        max_area_ratio = max(float(self.config.cardboard_box_max_area_ratio), 0.55)
+        if area_ratio > max_area_ratio:
+            return False
+        if self._person_overlap_ratio(det.box, persons) > 0.85:
+            return False
+        x1, y1, x2, y2 = det.box
+        width = max(0.0, x2 - x1)
+        height = max(0.0, y2 - y1)
+        if width < 12.0 or height < 12.0:
+            return False
+        aspect = width / max(height, 1.0)
+        return 0.20 <= aspect <= 5.0
+
+    def _detect_cardboard_boxes_opencv(
+        self,
+        frame_bgr: Any,
+        *,
+        frame_size: tuple[int, int],
+        persons: list[Detection] | None = None,
+    ) -> list[Detection]:
+        frame_w, frame_h = frame_size
+        frame_area = max(1.0, float(frame_w * frame_h))
+        min_area = frame_area * float(self.config.cardboard_box_min_area_ratio)
+        max_area = frame_area * float(self.config.cardboard_box_max_area_ratio)
+
+        hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+        # Cardboard under phone-camera lighting is usually yellow/tan. Keep
+        # the hue away from red/pink because skin and hoodie sleeves otherwise
+        # create large false boxes in the foreground.
+        tan_mask = cv2.inRange(hsv, (14, 12, 35), (42, 220, 255))
+        brown_mask = cv2.inRange(hsv, (12, 35, 30), (32, 255, 225))
+        mask = cv2.bitwise_or(tan_mask, brown_mask)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        candidates: list[tuple[float, Detection]] = []
+        for contour in contours:
+            area = float(cv2.contourArea(contour))
+            if area < min_area or area > max_area:
+                continue
+
+            x, y, w, h = cv2.boundingRect(contour)
+            if w <= 0 or h <= 0:
+                continue
+            box = (float(x), float(y), float(x + w), float(y + h))
+            if self.config.use_entry_zone and not _point_in_zone(
+                _box_center(box), self.config.entry_zone, frame_size
+            ):
+                continue
+            area_ratio = area / frame_area
+            person_overlap = self._person_overlap_ratio(box, persons or [])
+            touches_edge = _touches_frame_edge(
+                box,
+                frame_size,
+                float(self.config.cardboard_box_edge_margin_ratio),
+            )
+            if touches_edge and area < max(min_area * 3.0, frame_area * 0.02):
+                continue
+
+            aspect = w / max(float(h), 1.0)
+            if aspect < 0.35 or aspect > 3.0:
+                continue
+            extent = area / max(float(w * h), 1.0)
+            if extent < float(self.config.cardboard_box_min_extent):
+                continue
+
+            mask_area = float(cv2.countNonZero(mask[y : y + h, x : x + w]))
+            mask_coverage = mask_area / max(float(w * h), 1.0)
+            score = self._cardboard_candidate_score(
+                box,
+                frame_size=frame_size,
+                area_ratio=area_ratio,
+                extent=extent,
+                mask_coverage=mask_coverage,
+                person_overlap=person_overlap,
+            )
+            if score < float(self.config.cardboard_box_min_score):
+                continue
+
+            confidence = min(0.88, max(float(self.config.cardboard_box_min_confidence), score))
+            candidates.append(
+                (
+                    score,
+                    Detection(
+                        cls_id=-100,
+                        label="cardboard box",
+                        confidence=confidence,
+                        box=box,
+                    ),
+                )
+            )
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        if candidates:
+            return [candidates[0][1]]
+        return []
+
+    def _cardboard_candidate_score(
+        self,
+        box: tuple[float, float, float, float],
+        *,
+        frame_size: tuple[int, int],
+        area_ratio: float,
+        extent: float,
+        mask_coverage: float,
+        person_overlap: float,
+    ) -> float:
+        _frame_w, frame_h = frame_size
+        _cx, cy = _box_center(box)
+        cy_norm = cy / max(float(frame_h), 1.0)
+        floor_min = float(self.config.cardboard_box_floor_min_y_ratio)
+        floor_score = max(0.0, min(1.0, (cy_norm - (floor_min - 0.16)) / 0.28))
+        size_score = max(0.0, min(1.0, area_ratio / 0.035))
+        shape_score = max(0.0, min(1.0, extent / 0.70))
+        color_score = max(0.0, min(1.0, mask_coverage / 0.65))
+        person_penalty = max(0.0, min(0.80, person_overlap * 1.4))
+        return (
+            (0.34 * floor_score)
+            + (0.24 * size_score)
+            + (0.22 * shape_score)
+            + (0.20 * color_score)
+            - person_penalty
+        )
+
+    @staticmethod
+    def _person_overlap_ratio(
+        box: tuple[float, float, float, float],
+        persons: list[Detection],
+    ) -> float:
+        if not persons:
+            return 0.0
+        bx1, by1, bx2, by2 = box
+        box_area = max(1.0, _box_area(box))
+        max_overlap = 0.0
+        for person in persons:
+            px1, py1, px2, py2 = person.box
+            ix1 = max(bx1, px1)
+            iy1 = max(by1, py1)
+            ix2 = min(bx2, px2)
+            iy2 = min(by2, py2)
+            inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+            max_overlap = max(max_overlap, inter / box_area)
+        return max_overlap
 
     def _resolve_monitored_class_ids(self) -> list[int]:
         names = getattr(self.yolo, "names", None)
@@ -1478,9 +1874,51 @@ class VisionEngine:
             pass
         self.worker_thread.join(timeout=1.0)
 
+    def _stop_background_workers(self) -> None:
+        self._stop_queue_worker(self.publisher_thread, self.publish_queue)
+        self._stop_queue_worker(self.artifact_thread, self.artifact_queue)
+
+    @staticmethod
+    def _stop_queue_worker(
+        worker: threading.Thread | None,
+        worker_queue: queue.Queue[Any],
+    ) -> None:
+        if worker is None:
+            return
+        try:
+            worker_queue.put_nowait(None)
+        except queue.Full:
+            try:
+                worker_queue.get_nowait()
+                worker_queue.task_done()
+                worker_queue.put_nowait(None)
+            except Exception:
+                pass
+        worker.join(timeout=1.0)
+
     def _classification_busy(self) -> bool:
         with self.state_lock:
             return self.classification_in_flight
+
+    def _publisher_worker(self) -> None:
+        while True:
+            event = self.publish_queue.get()
+            try:
+                if event is None:
+                    return
+                self._publish_event_sync(event)
+            finally:
+                self.publish_queue.task_done()
+
+    def _artifact_worker(self) -> None:
+        while True:
+            request = self.artifact_queue.get()
+            try:
+                if request is None:
+                    return
+                self._save_artifact_sync(request)
+            finally:
+                self.artifact_queue.task_done()
 
     # ---------------------------------------------------------------------
     # Failure artifacts
@@ -1502,27 +1940,48 @@ class VisionEngine:
         persons: list[Detection],
         carryables: list[Detection],
     ) -> None:
+        if not self.config.save_failure_artifacts:
+            return
+        frame_copy = frame_bgr.copy() if hasattr(frame_bgr, "copy") else frame_bgr
+        request = ArtifactRequest(
+            kind=kind,
+            timestamp=time.time(),
+            frame_seq=self.frame_seq,
+            frame_bgr=frame_copy,
+            decision=decision,
+            persons=list(persons),
+            carryables=list(carryables),
+        )
+        if self.artifact_thread is None:
+            self._save_artifact_sync(request)
+            return
+        try:
+            self.artifact_queue.put_nowait(request)
+        except queue.Full:
+            log.warning("Dropping %s artifact because artifact writer is behind.", kind)
+
+    def _save_artifact_sync(self, request: ArtifactRequest) -> None:
         try:
             dir_path = self._ensure_artifact_dir()
-            ts = time.strftime("%Y%m%d-%H%M%S")
-            stem = f"{ts}_{kind}_{uuid.uuid4().hex[:6]}"
+            ts = time.strftime("%Y%m%d-%H%M%S", time.localtime(request.timestamp))
+            stem = f"{ts}_{request.kind}_{uuid.uuid4().hex[:6]}"
             jpg_path = os.path.join(dir_path, stem + ".jpg")
             meta_path = os.path.join(dir_path, stem + ".json")
-            cv2.imwrite(jpg_path, frame_bgr)
-            cand = decision.candidate
+            cv2.imwrite(jpg_path, request.frame_bgr)
+            cand = request.decision.candidate
             meta = {
-                "kind": kind,
-                "timestamp": time.time(),
-                "frame_seq": self.frame_seq,
-                "state": decision.state,
-                "cues": decision.cues,
-                "suppression_active": decision.suppression_active,
+                "kind": request.kind,
+                "timestamp": request.timestamp,
+                "frame_seq": request.frame_seq,
+                "state": request.decision.state,
+                "cues": request.decision.cues,
+                "suppression_active": request.decision.suppression_active,
                 "persons": [
-                    {"conf": p.confidence, "box": list(p.box)} for p in persons
+                    {"conf": p.confidence, "box": list(p.box)} for p in request.persons
                 ],
                 "carryables": [
                     {"label": c.label, "conf": c.confidence, "box": list(c.box)}
-                    for c in carryables
+                    for c in request.carryables
                 ],
                 "candidate": None
                 if cand is None
@@ -1538,7 +1997,7 @@ class VisionEngine:
             with open(meta_path, "w") as fh:
                 json.dump(meta, fh, indent=2)
         except Exception:
-            log.exception("Failed to save failure artifact (kind=%s)", kind)
+            log.exception("Failed to save failure artifact (kind=%s)", request.kind)
 
     # ---------------------------------------------------------------------
     # Misc
@@ -1597,6 +2056,9 @@ class VisionEngine:
         if (now - self._last_fire_at) < self.config.demo_fast_path_cooldown_seconds:
             return False
         return True
+
+    def _should_suppress_duplicate_theft_emit(self) -> bool:
+        return self._active_incident_alert_sent
 
     def _incident_id_for_emit(self, now: float) -> str:
         if self._active_incident_id is None:
@@ -1704,6 +2166,19 @@ class VisionEngine:
     def _publish_event(self, event: dict[str, Any]) -> None:
         if not self.config.post_events:
             return
+        event_payload = dict(event)
+        if self.publisher_thread is None:
+            self._publish_event_sync(event_payload)
+            return
+        try:
+            self.publish_queue.put_nowait(event_payload)
+        except queue.Full:
+            log.warning(
+                "Dropping event %s because event publisher is behind.",
+                event_payload.get("event_id", "<unknown>"),
+            )
+
+    def _publish_event_sync(self, event: dict[str, Any]) -> None:
         try:
             result = post_event(event, self.config)
         except Exception as exc:
@@ -1801,7 +2276,7 @@ def _config_with(post_events: bool | None = None) -> Config:
         capture_height=CONFIG.capture_height,
         yolo_model=CONFIG.yolo_model,
         yolo_input_size=CONFIG.yolo_input_size,
-            yolo_input_size_busy=CONFIG.yolo_input_size_busy,
+        yolo_input_size_busy=CONFIG.yolo_input_size_busy,
         qwen_model=CONFIG.qwen_model,
         qwen_max_new_tokens=CONFIG.qwen_max_new_tokens,
         qwen_min_pixels=CONFIG.qwen_min_pixels,
@@ -1815,15 +2290,30 @@ def _config_with(post_events: bool | None = None) -> Config:
         carryable_confidence=CONFIG.carryable_confidence,
         post_timeout_seconds=CONFIG.post_timeout_seconds,
         post_events=post_events,
+        event_queue_size=CONFIG.event_queue_size,
         show_window=CONFIG.show_window,
         mock_classifier=CONFIG.mock_classifier,
         debug_overlay=CONFIG.debug_overlay,
         debug_detections=CONFIG.debug_detections,
         save_failure_artifacts=CONFIG.save_failure_artifacts,
         debug_artifact_dir=CONFIG.debug_artifact_dir,
+        artifact_queue_size=CONFIG.artifact_queue_size,
         entry_zone=CONFIG.entry_zone,
         use_entry_zone=CONFIG.use_entry_zone,
         carryable_labels=CONFIG.carryable_labels,
+        cardboard_box_enable=CONFIG.cardboard_box_enable,
+        cardboard_detector_backend=CONFIG.cardboard_detector_backend,
+        yolo_world_model=CONFIG.yolo_world_model,
+        yolo_world_input_size=CONFIG.yolo_world_input_size,
+        yolo_world_confidence=CONFIG.yolo_world_confidence,
+        yolo_world_cardboard_classes=CONFIG.yolo_world_cardboard_classes,
+        cardboard_box_min_area_ratio=CONFIG.cardboard_box_min_area_ratio,
+        cardboard_box_max_area_ratio=CONFIG.cardboard_box_max_area_ratio,
+        cardboard_box_min_extent=CONFIG.cardboard_box_min_extent,
+        cardboard_box_min_confidence=CONFIG.cardboard_box_min_confidence,
+        cardboard_box_edge_margin_ratio=CONFIG.cardboard_box_edge_margin_ratio,
+        cardboard_box_floor_min_y_ratio=CONFIG.cardboard_box_floor_min_y_ratio,
+        cardboard_box_min_score=CONFIG.cardboard_box_min_score,
         interaction_frames_required=CONFIG.interaction_frames_required,
         min_dwell_seconds=CONFIG.min_dwell_seconds,
         carryable_grace_seconds=CONFIG.carryable_grace_seconds,
@@ -1849,7 +2339,7 @@ def _config_with(post_events: bool | None = None) -> Config:
         qwen_frames_per_inference=CONFIG.qwen_frames_per_inference,
         demo_fast_path=CONFIG.demo_fast_path,
         demo_fast_path_cooldown_seconds=CONFIG.demo_fast_path_cooldown_seconds,
-            capture_buffer_drain_grabs=CONFIG.capture_buffer_drain_grabs,
+        capture_buffer_drain_grabs=CONFIG.capture_buffer_drain_grabs,
     )
 
 

@@ -1,0 +1,37 @@
+{
+  "kind": "emit",
+  "timestamp": 1778394367.80755,
+  "frame_seq": 1461,
+  "state": "THEFT_CONFIRMED",
+  "cues": [
+    "package_moved",
+    "person_present",
+    "person_near_anchor",
+    "theft_confirmed"
+  ],
+  "suppression_active": false,
+  "persons": [
+    {
+      "conf": 0.8243779540061951,
+      "box": [
+        5.89593505859375,
+        64.25154113769531,
+        600.1454467773438,
+        478.76776123046875
+      ]
+    }
+  ],
+  "carryables": [
+    {
+      "label": "cardboard box",
+      "conf": 0.518796992481203,
+      "box": [
+        496.0,
+        347.0,
+        538.0,
+        404.0
+      ]
+    }
+  ],
+  "candidate": null
+}

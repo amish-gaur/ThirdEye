@@ -1,0 +1,21 @@
+{
+  "kind": "emit",
+  "timestamp": 1778373578.889504,
+  "frame_seq": 42,
+  "state": "IDLE",
+  "cues": [],
+  "suppression_active": false,
+  "persons": [
+    {
+      "conf": 0.42763325572013855,
+      "box": [
+        593.320068359375,
+        1.146026611328125,
+        639.8876953125,
+        172.7794647216797
+      ]
+    }
+  ],
+  "carryables": [],
+  "candidate": null
+}

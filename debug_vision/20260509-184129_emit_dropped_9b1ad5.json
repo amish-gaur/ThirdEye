@@ -1,0 +1,50 @@
+{
+  "kind": "emit_dropped",
+  "timestamp": 1778377289.457994,
+  "frame_seq": 14,
+  "state": "CANDIDATE",
+  "cues": [
+    "person_in_zone",
+    "carryable_recent:laptop",
+    "person_carryable_pair"
+  ],
+  "suppression_active": true,
+  "persons": [
+    {
+      "conf": 0.9082667231559753,
+      "box": [
+        0.23797607421875,
+        31.52099609375,
+        383.94140625,
+        479.07757568359375
+      ]
+    },
+    {
+      "conf": 0.8501818180084229,
+      "box": [
+        551.3984375,
+        230.101806640625,
+        639.8624267578125,
+        478.356201171875
+      ]
+    },
+    {
+      "conf": 0.42030102014541626,
+      "box": [
+        29.73653793334961,
+        214.68492126464844,
+        62.90402603149414,
+        241.31935119628906
+      ]
+    }
+  ],
+  "carryables": [],
+  "candidate": {
+    "first_seen_at": 1778377289.10088,
+    "last_seen_at": 1778377289.354653,
+    "interaction_frames": 3,
+    "recent_zone_dwell": 0.3829379081726074,
+    "last_carryable_label": "laptop",
+    "alert_fired": true
+  }
+}

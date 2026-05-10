@@ -94,6 +94,14 @@ def test_camera_page_uses_websocket_url(client: TestClient) -> None:
     assert ">lobby<" in body
 
 
+def test_camera_page_has_websocket_backpressure_guard(client: TestClient) -> None:
+    resp = client.get("/cam/lobby")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "encodeInFlight" in body
+    assert "ws.bufferedAmount > 1_000_000" in body
+
+
 # --------------------------------------------------------------------------
 # Frame ingest (HTTP fallback) + latest.jpg + status
 # --------------------------------------------------------------------------
@@ -210,6 +218,19 @@ def test_frame_store_subscribers_receive_new_frames() -> None:
         store.publish_frame("default", JPEG_1PX)
         chunk = await asyncio.wait_for(q.get(), timeout=1.0)
         assert chunk == JPEG_1PX
+
+    asyncio.run(_run())
+
+
+def test_frame_store_subscribers_keep_only_newest_frame() -> None:
+    async def _run():
+        store = FrameStore()
+        q = store.subscribe("default")
+        store.publish_frame("default", b"\xff\xd8\xffold-frame")
+        store.publish_frame("default", b"\xff\xd8\xffnew-frame")
+        chunk = await asyncio.wait_for(q.get(), timeout=1.0)
+        assert chunk == b"\xff\xd8\xffnew-frame"
+        assert q.empty()
 
     asyncio.run(_run())
 

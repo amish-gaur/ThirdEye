@@ -1,0 +1,26 @@
+{
+  "kind": "emit",
+  "timestamp": 1778391892.166324,
+  "frame_seq": 105,
+  "state": "THEFT_CONFIRMED",
+  "cues": [
+    "package_missing",
+    "person_present",
+    "person_near_anchor",
+    "theft_confirmed"
+  ],
+  "suppression_active": false,
+  "persons": [
+    {
+      "conf": 0.8777275681495667,
+      "box": [
+        305.54522705078125,
+        0.378387451171875,
+        516.08056640625,
+        343.85980224609375
+      ]
+    }
+  ],
+  "carryables": [],
+  "candidate": null
+}

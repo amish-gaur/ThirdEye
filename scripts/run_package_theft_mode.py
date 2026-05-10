@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import os
 
-from vision_pipeline.engine import main
-
 
 def _setdefault(key: str, value: str) -> None:
     if not os.getenv(key):
@@ -30,13 +28,25 @@ def apply_package_theft_defaults() -> None:
 
     # Practical defaults for porch/package objects.
     _setdefault("CARRYABLE_LABELS", "backpack,handbag,suitcase,cell phone,laptop")
+    _setdefault("CARDBOARD_BOX_ENABLE", "true")
+    _setdefault("CARDBOARD_DETECTOR_BACKEND", "yolo_world")
+    _setdefault("YOLO_WORLD_MODEL", "yolov8s-world.pt")
+    _setdefault("YOLO_WORLD_INPUT_SIZE", "640")
+    _setdefault("YOLO_WORLD_CONFIDENCE", "0.10")
+    _setdefault("YOLO_WORLD_CARDBOARD_CLASSES", "cardboard box,shipping box")
+    _setdefault("CARDBOARD_BOX_MIN_AREA_RATIO", "0.003")
+    _setdefault("CARDBOARD_BOX_MAX_AREA_RATIO", "0.25")
+    _setdefault("CARDBOARD_BOX_MIN_CONFIDENCE", "0.32")
+    _setdefault("CARDBOARD_BOX_EDGE_MARGIN_RATIO", "0.005")
+    _setdefault("CARDBOARD_BOX_FLOOR_MIN_Y_RATIO", "0.60")
+    _setdefault("CARDBOARD_BOX_MIN_SCORE", "0.16")
     _setdefault("PERSON_CONFIDENCE", "0.40")
     _setdefault("CARRYABLE_CONFIDENCE", "0.25")
     # Keep the live preview smooth when Qwen is active.
     _setdefault("YOLO_INPUT_SIZE_BUSY", "512")
     _setdefault("CAPTURE_BUFFER_DRAIN_GRABS", "2")
     _setdefault("PAUSE_DETECTION_WHILE_CLASSIFYING", "true")
-    _setdefault("QWEN_MAX_NEW_TOKENS", "64")
+    _setdefault("QWEN_MAX_NEW_TOKENS", "128")
     # Make theft sequence detection robust to occasional dropped detections.
     _setdefault("ANCHOR_SECONDS", "0.4")
     _setdefault("MOVE_PX", "24")
@@ -53,6 +63,12 @@ def apply_package_theft_defaults() -> None:
     _setdefault("EMERGENCY_CONFIDENCE_FLOOR", "0.50")
 
 
-if __name__ == "__main__":
+def run() -> None:
     apply_package_theft_defaults()
+    from vision_pipeline.engine import main
+
     main()
+
+
+if __name__ == "__main__":
+    run()

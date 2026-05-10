@@ -1,0 +1,23 @@
+{
+  "kind": "emit",
+  "timestamp": 1778380719.3662589,
+  "frame_seq": 1,
+  "state": "WATCHING",
+  "cues": [
+    "person_in_zone"
+  ],
+  "suppression_active": false,
+  "persons": [
+    {
+      "conf": 0.8324742913246155,
+      "box": [
+        3.924224853515625,
+        226.5029754638672,
+        372.0107116699219,
+        479.74078369140625
+      ]
+    }
+  ],
+  "carryables": [],
+  "candidate": null
+}

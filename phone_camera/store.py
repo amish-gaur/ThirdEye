@@ -136,34 +136,20 @@ class FrameStore:
                 slot.label = label
             subs = list(slot._subscribers)
         for q in subs:
-            try:
-                q.put_nowait(jpeg_bytes)
-            except asyncio.QueueFull:
-                # drop oldest, push newest — MJPEG viewers prefer "live" over "complete"
-                try:
-                    _ = q.get_nowait()
-                except Exception:
-                    pass
-                try:
-                    q.put_nowait(jpeg_bytes)
-                except Exception:
-                    pass
+            self._replace_queue_item(q, jpeg_bytes)
         return slot
 
     # --- subscribers (MJPEG / SSE fan-out) -----------------------------
 
     def subscribe(self, token: str) -> asyncio.Queue[bytes]:
         slot = self.ensure_slot(token)
-        q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=2)
+        q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=1)
         with slot._lock:
             slot._subscribers.append(q)
             # Prime with whatever we already have so a freshly-attached MJPEG
             # consumer doesn't see a blank screen until the next frame.
             if slot.latest_jpeg is not None:
-                try:
-                    q.put_nowait(slot.latest_jpeg)
-                except asyncio.QueueFull:
-                    pass
+                self._replace_queue_item(q, slot.latest_jpeg)
         return q
 
     def unsubscribe(self, token: str, q: asyncio.Queue[bytes]) -> None:
@@ -173,6 +159,24 @@ class FrameStore:
         with slot._lock:
             if q in slot._subscribers:
                 slot._subscribers.remove(q)
+
+    @staticmethod
+    def _replace_queue_item(q: asyncio.Queue[bytes], jpeg_bytes: bytes) -> None:
+        """Keep only the newest frame for live viewers.
+
+        MJPEG consumers should see the present, not a perfect replay of every
+        uploaded frame. Replacing the queued item prevents slow readers from
+        building latency.
+        """
+        while True:
+            try:
+                q.put_nowait(jpeg_bytes)
+                return
+            except asyncio.QueueFull:
+                try:
+                    _ = q.get_nowait()
+                except Exception:
+                    return
 
 
 _GLOBAL_STORE: Optional[FrameStore] = None

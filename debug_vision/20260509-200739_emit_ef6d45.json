@@ -1,0 +1,40 @@
+{
+  "kind": "emit",
+  "timestamp": 1778382459.74457,
+  "frame_seq": 1268,
+  "state": "CANDIDATE",
+  "cues": [
+    "person_in_zone",
+    "possible_violence"
+  ],
+  "suppression_active": true,
+  "persons": [
+    {
+      "conf": 0.8753448128700256,
+      "box": [
+        64.576171875,
+        153.0697021484375,
+        614.167236328125,
+        479.66961669921875
+      ]
+    },
+    {
+      "conf": 0.8225196599960327,
+      "box": [
+        462.05462646484375,
+        306.56158447265625,
+        576.2429809570312,
+        454.39959716796875
+      ]
+    }
+  ],
+  "carryables": [],
+  "candidate": {
+    "first_seen_at": 1778382459.4740942,
+    "last_seen_at": 1778382459.6908228,
+    "interaction_frames": 3,
+    "recent_zone_dwell": 0.3033108711242676,
+    "last_carryable_label": null,
+    "alert_fired": true
+  }
+}

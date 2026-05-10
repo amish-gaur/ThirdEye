@@ -81,6 +81,28 @@ class Config:
     alert_confidence_floor: float = _float("ALERT_CONFIDENCE_FLOOR", 0.35)
     emergency_confidence_floor: float = _float("EMERGENCY_CONFIDENCE_FLOOR", 0.55)
 
+    # Package/order identifier. This is separate from the vision classifier so
+    # teammates can call action_router.package_identifier.identify_package(...)
+    # only when they have a clip and candidate order list.
+    package_orders_path: str = os.getenv("PACKAGE_ORDERS_PATH", "")
+    package_identifier_qwen_model: str = os.getenv(
+        "PACKAGE_IDENTIFIER_QWEN_MODEL",
+        os.getenv("QWEN_MODEL", "Qwen/Qwen2-VL-2B-Instruct"),
+    )
+    package_identifier_qwen_max_new_tokens: int = _int(
+        "PACKAGE_IDENTIFIER_QWEN_MAX_NEW_TOKENS", 160
+    )
+    package_identifier_qwen_min_pixels: int = _int(
+        "PACKAGE_IDENTIFIER_QWEN_MIN_PIXELS", 256 * 28 * 28
+    )
+    package_identifier_qwen_max_pixels: int = _int(
+        "PACKAGE_IDENTIFIER_QWEN_MAX_PIXELS", 512 * 28 * 28
+    )
+    package_identifier_qwen_frame_max_edge: int = _int(
+        "PACKAGE_IDENTIFIER_QWEN_FRAME_MAX_EDGE", 512
+    )
+    package_identifier_qwen_frames: int = _int("PACKAGE_IDENTIFIER_QWEN_FRAMES", 3)
+
     def elevenlabs_play_enabled(self) -> bool:
         """True only when MP3 <Play> can actually work (key + Twilio-reachable base URL)."""
         if not self.use_elevenlabs:
