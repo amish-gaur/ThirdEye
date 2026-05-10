@@ -137,13 +137,39 @@ class InsightFaceEmbedder:
                     "`onnxruntime` to your environment to enable the face "
                     "filter, or set FACE_FILTER_ENABLED=false."
                 ) from exc
-            app = FaceAnalysis(name=self.model_name, allowed_modules=["detection", "recognition"])
-            # ctx_id=-1 selects CPU; ONNXRuntime will pick the best EP available.
-            app.prepare(ctx_id=-1, det_size=self.det_size)
-            self._app = app
-            log.info(
-                "InsightFace %s loaded (det_size=%s)", self.model_name, self.det_size
+            # CoreML on Apple Silicon — buffalo_l on the Neural Engine is ~3-5x
+            # faster than CPU on M-series, which is the difference between
+            # face-detect landing on a moving subject vs missing them entirely.
+            # Pattern mirrors scripts/face_id_demo.py:make_app(); ctx_id=0
+            # picks the first device, providers picks the runtime. Falling
+            # back to CPU silently is fine — InsightFace warns if it does.
+            app = FaceAnalysis(
+                name=self.model_name,
+                allowed_modules=["detection", "recognition"],
+                providers=["CoreMLExecutionProvider", "CPUExecutionProvider"],
             )
+            app.prepare(ctx_id=0, det_size=self.det_size)
+            providers_per_model: list[tuple[str, list[str]]] = []
+            for model_name, model in app.models.items():
+                sess = getattr(model, "session", None)
+                if sess is not None:
+                    providers_per_model.append((model_name, list(sess.get_providers())))
+            log.info(
+                "InsightFace %s loaded (det_size=%s) providers=%s",
+                self.model_name,
+                self.det_size,
+                providers_per_model,
+            )
+            if not any(
+                "CoreMLExecutionProvider" in providers
+                for _, providers in providers_per_model
+            ):
+                log.warning(
+                    "CoreMLExecutionProvider not active on any model — face filter "
+                    "will run on CPU and may miss moving subjects. Check that "
+                    "onnxruntime-coreml is installed and importable.",
+                )
+            self._app = app
             return app
 
     def detect_and_embed(self, bgr_image: np.ndarray) -> list[FaceEmbedding]:

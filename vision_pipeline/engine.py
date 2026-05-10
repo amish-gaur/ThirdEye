@@ -38,6 +38,7 @@ except ImportError:  # pragma: no cover - depends on the installed ultralytics v
 
 from .config import CONFIG, Config
 from .events import VISION_LANGUAGE_PROMPT, build_event, evaluate_classifier_output
+from .face_filter import FaceFilter
 from .publisher import post_event
 from .theft_alert import trigger_theft_alert
 from .theft_tracker import (
@@ -953,6 +954,7 @@ class VisionEngine:
         self.latest_decision: BehaviorDecision = _empty_decision()
         self.behavior = BehaviorTracker(config)
         self.theft_tracker = PackageTheftTracker(config)
+        self.face_filter: FaceFilter | None = self._init_face_filter(config)
         self._prev_motion_gray: Any | None = None
         self._artifact_dir_ensured = False
         # Demo-mode flag driving carryable label set
@@ -1073,6 +1075,50 @@ class VisionEngine:
             self.config.debug_overlay,
             self.config.save_failure_artifacts,
         )
+
+    def _init_face_filter(self, config: Config) -> "FaceFilter | None":
+        """Build the family-face exclusion layer if FACE_FILTER_ENABLED=true.
+
+        Fail-soft on every failure mode that isn't a flat misconfiguration:
+        the alert path is more important than the suppression layer, so a
+        missing DB / missing model / missing onnxruntime should log loudly
+        and return None instead of crashing engine boot. The processing
+        loop checks `self.face_filter is not None` before consulting it.
+        """
+        if not config.face_filter_enabled:
+            return None
+        from .face_filter import InsightFaceEmbedder
+        try:
+            embedder = InsightFaceEmbedder(
+                model_name=config.face_model_name,
+                apply_clahe=config.face_clahe_enabled,
+            )
+            face_filter = FaceFilter(
+                db_path=config.face_db_path,
+                similarity_threshold=config.face_similarity_threshold,
+                min_face_pixels=config.face_min_pixels,
+                min_det_score=config.face_min_det_score,
+                max_yaw_degrees=config.face_max_yaw_degrees,
+                max_pitch_degrees=config.face_max_pitch_degrees,
+                topk_match=config.face_topk_match,
+                embedder=embedder,
+            )
+        except Exception as exc:
+            log.warning(
+                "Face filter init failed (%s); proceeding with face_filter=None. "
+                "Set FACE_FILTER_ENABLED=false to silence this warning.",
+                exc,
+            )
+            return None
+        names = face_filter.enrolled_names
+        log.info(
+            "Face filter enabled: db=%s enrolled=%d (%s) threshold=%.2f",
+            config.face_db_path,
+            len(names),
+            ", ".join(names) if names else "—",
+            config.face_similarity_threshold,
+        )
+        return face_filter
 
     @staticmethod
     def _normalize_cardboard_backend(raw: str) -> str:
@@ -1351,6 +1397,38 @@ class VisionEngine:
                 )
 
             should_fire = theft_decision.should_emit
+            if should_fire and self.face_filter is not None and persons:
+                # Face-filter gate: if every YOLO person resolves to a known
+                # enrolled face, suppress the alert. Failure modes are
+                # fail-open by design — unknown / no_face / face_too_small
+                # all let the alert through, so a stranger walking in front
+                # of the camera at a bad angle never gets silently dropped.
+                try:
+                    person_boxes = [d.box for d in persons]
+                    suppress, verdicts = self.face_filter.all_known(
+                        frame, person_boxes
+                    )
+                except Exception as exc:
+                    log.warning("Face filter raised; not suppressing: %s", exc)
+                    suppress = False
+                    verdicts = []
+                if suppress:
+                    names = sorted({v.name for v in verdicts if v.name})
+                    log.info(
+                        "Face filter SUPPRESS: every visible person matched "
+                        "enrolled identity (%s); skipping theft emit %s",
+                        ", ".join(names) or "—",
+                        self._active_incident_id,
+                    )
+                    should_fire = False
+                elif verdicts:
+                    log.info(
+                        "Face filter PASS: %s",
+                        ", ".join(
+                            f"{v.name or v.reason}({v.similarity:.2f})"
+                            for v in verdicts
+                        ),
+                    )
             if should_fire and self._should_suppress_duplicate_theft_emit():
                 log.info(
                     "Suppressing duplicate theft emit for active incident %s",
