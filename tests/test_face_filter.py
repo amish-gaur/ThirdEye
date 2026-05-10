@@ -305,3 +305,102 @@ def test_save_database_appends_for_existing_name(tmp_path: Path):
     assert filt.enrolled_names == ["amish"]
     only_person = filt._known[0]
     assert only_person.embeddings.shape[0] == 2
+
+
+# ---------------------------------------------------------------------------
+# Quality gating + top-K matching (added with the track-anchored identity work)
+# ---------------------------------------------------------------------------
+
+
+def test_low_det_score_face_is_rejected(family_db: Path):
+    """A low-quality detection (det_score below floor) must not match."""
+    filt = FaceFilter(
+        db_path=family_db,
+        similarity_threshold=0.45,
+        min_face_pixels=40,
+        min_det_score=0.5,
+        embedder=StubEmbedder(),
+    )
+    bad_face = FaceEmbedding(
+        bbox=(100.0, 100.0, 200.0, 200.0),
+        embedding=EMB_AMISH,
+        det_score=0.10,
+    )
+    assert filt._verdict_for_face(bad_face).reason == "low_quality"
+    assert filt.passes_quality_gate(bad_face) is False
+
+
+def test_extreme_yaw_face_is_rejected(family_db: Path):
+    filt = FaceFilter(
+        db_path=family_db,
+        max_yaw_degrees=30.0,
+        min_face_pixels=40,
+        min_det_score=0.0,
+        embedder=StubEmbedder(),
+    )
+    profile = FaceEmbedding(
+        bbox=(0.0, 0.0, 100.0, 100.0),
+        embedding=EMB_AMISH,
+        det_score=0.95,
+        yaw=60.0,
+    )
+    assert filt._verdict_for_face(profile).reason == "extreme_yaw"
+
+
+def test_extreme_pitch_face_is_rejected(family_db: Path):
+    filt = FaceFilter(
+        db_path=family_db,
+        max_pitch_degrees=20.0,
+        min_face_pixels=40,
+        min_det_score=0.0,
+        embedder=StubEmbedder(),
+    )
+    head_down = FaceEmbedding(
+        bbox=(0.0, 0.0, 100.0, 100.0),
+        embedding=EMB_AMISH,
+        det_score=0.95,
+        pitch=45.0,
+    )
+    assert filt._verdict_for_face(head_down).reason == "extreme_pitch"
+
+
+def test_topk_match_averages_top_embeddings(tmp_path: Path):
+    """Top-3 mean must beat best-of-1 when the matching photo is alone among
+    near-orthogonal enrolled photos.
+
+    Enroll 3 vectors with one strong match to the query. With topk=1 the
+    best similarity is 1.0 (the matching vector), with topk=3 it averages
+    in the orthogonal pair and lands lower — verifying the codepath.
+    """
+    db = tmp_path / "embeddings.json"
+    target = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    near = np.array([0.6, 0.8, 0.0, 0.0], dtype=np.float32)
+    far = np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32)
+    save_database(db, {"amish": [target, near, far]})
+    query = target
+
+    top1 = FaceFilter(db_path=db, topk_match=1, min_face_pixels=0, min_det_score=0.0,
+                      embedder=StubEmbedder())
+    top3 = FaceFilter(db_path=db, topk_match=3, min_face_pixels=0, min_det_score=0.0,
+                      embedder=StubEmbedder())
+    _, sim_top1 = top1.match_embedding(query)
+    _, sim_top3 = top3.match_embedding(query)
+    # Top-3 mean is strictly less than best-of-1 (since two of the three
+    # enrolled vectors are not parallel to the query).
+    assert sim_top1 == pytest.approx(1.0, rel=1e-5)
+    assert sim_top3 < sim_top1
+
+
+def test_match_embedding_returns_none_below_threshold(tmp_path: Path):
+    db = tmp_path / "embeddings.json"
+    save_database(db, {"amish": [EMB_AMISH]})
+    filt = FaceFilter(
+        db_path=db, similarity_threshold=0.9,
+        min_face_pixels=0, min_det_score=0.0,
+        embedder=StubEmbedder(),
+    )
+    weakly = np.array([0.3, 0.95, 0.0, 0.0], dtype=np.float32)  # cosine ~0.3 vs amish
+    weakly /= np.linalg.norm(weakly)
+    name, sim = filt.match_embedding(weakly)
+    assert name is None
+    assert 0.0 <= sim < 0.9

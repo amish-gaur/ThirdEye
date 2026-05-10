@@ -157,8 +157,23 @@ class Config:
     # suppressed if every visible person is family.
     face_filter_enabled: bool = _bool("FACE_FILTER_ENABLED", False)
     face_db_path: str = _str("FACE_DB_PATH", "./family_faces/embeddings.json")
-    face_similarity_threshold: float = _float("FACE_SIMILARITY_THRESHOLD", 0.45)
-    face_min_pixels: int = _int("FACE_MIN_PIXELS", 40)
+    # Defaults retuned 2026-05: buffalo_l + 0.40 threshold + 64 px floor +
+    # quality gate. Per-frame matching also wraps a TrackIdentityResolver so
+    # one clean face read tags the YOLO track id, surviving brief occlusions
+    # like someone bending over a package. See track_identity.py.
+    face_model_name: str = _str("FACE_MODEL_NAME", "buffalo_l")
+    face_similarity_threshold: float = _float("FACE_SIMILARITY_THRESHOLD", 0.40)
+    face_min_pixels: int = _int("FACE_MIN_PIXELS", 64)
+    face_min_det_score: float = _float("FACE_MIN_DET_SCORE", 0.5)
+    face_max_yaw_degrees: float = _float("FACE_MAX_YAW_DEGREES", 35.0)
+    face_max_pitch_degrees: float = _float("FACE_MAX_PITCH_DEGREES", 25.0)
+    face_topk_match: int = _int("FACE_TOPK_MATCH", 3)
+    face_clahe_enabled: bool = _bool("FACE_CLAHE_ENABLED", True)
+    face_anchor_ttl_seconds: float = _float("FACE_ANCHOR_TTL_SECONDS", 300.0)
+    face_anchor_min_frames: int = _int("FACE_ANCHOR_MIN_FRAMES", 2)
+    face_strong_anchor_similarity: float = _float("FACE_STRONG_ANCHOR_SIMILARITY", 0.55)
+    face_body_reid_enabled: bool = _bool("FACE_BODY_REID_ENABLED", True)
+    face_body_reid_threshold: float = _float("FACE_BODY_REID_THRESHOLD", 0.70)
     face_emit_ambient_event: bool = _bool("FACE_EMIT_AMBIENT_EVENT", False)
 
 

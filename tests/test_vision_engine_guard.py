@@ -173,7 +173,9 @@ def test_detected_classes_requests_person_and_carryable_objects(mocker) -> None:
     yolo_result.boxes = mocker.Mock()
     yolo_result.boxes.__len__ = mocker.Mock(return_value=2)
     yolo_result.boxes.cls.tolist.return_value = [0, 24]
+    yolo_result.boxes.id = None
     yolo_cls.return_value.predict.return_value = [yolo_result]
+    yolo_cls.return_value.track.return_value = [yolo_result]
 
     detected = engine._detected_classes("frame")
 
@@ -264,7 +266,9 @@ def test_separate_thresholds_person_filtered_carryable_kept(mocker) -> None:
         [100.0, 50.0, 250.0, 400.0],
         [120.0, 200.0, 220.0, 350.0],
     ]
+    yolo_result.boxes.id = None
     yolo_cls.return_value.predict.return_value = [yolo_result]
+    yolo_cls.return_value.track.return_value = [yolo_result]
 
     persons, carryables = engine._detect_persons_and_carryables("frame")
 
@@ -294,7 +298,9 @@ def test_separate_thresholds_both_kept_when_above(mocker) -> None:
         [100.0, 50.0, 250.0, 400.0],
         [120.0, 200.0, 220.0, 350.0],
     ]
+    yolo_result.boxes.id = None
     yolo_cls.return_value.predict.return_value = [yolo_result]
+    yolo_cls.return_value.track.return_value = [yolo_result]
 
     persons, carryables = engine._detect_persons_and_carryables("frame")
 
@@ -324,7 +330,9 @@ def test_tiny_edge_person_outside_zone_is_ignored(mocker) -> None:
     yolo_result.boxes.xyxy.tolist.return_value = [
         [0.0, 40.0, 25.0, 110.0],
     ]
+    yolo_result.boxes.id = None
     yolo_cls.return_value.predict.return_value = [yolo_result]
+    yolo_cls.return_value.track.return_value = [yolo_result]
 
     persons, carryables = engine._detect_persons_and_carryables("frame")
 
@@ -348,7 +356,9 @@ def test_low_confidence_laptop_false_positive_is_ignored(mocker) -> None:
     yolo_result.boxes.xyxy.tolist.return_value = [
         [140.0, 220.0, 210.0, 300.0],
     ]
+    yolo_result.boxes.id = None
     yolo_cls.return_value.predict.return_value = [yolo_result]
+    yolo_cls.return_value.track.return_value = [yolo_result]
 
     persons, carryables = engine._detect_persons_and_carryables("frame")
 
@@ -372,7 +382,9 @@ def test_low_confidence_cell_phone_detection_is_ignored(mocker) -> None:
     yolo_result.boxes.xyxy.tolist.return_value = [
         [180.0, 220.0, 220.0, 280.0],
     ]
+    yolo_result.boxes.id = None
     yolo_cls.return_value.predict.return_value = [yolo_result]
+    yolo_cls.return_value.track.return_value = [yolo_result]
 
     persons, carryables = engine._detect_persons_and_carryables("frame")
 
@@ -396,7 +408,9 @@ def test_high_confidence_cell_phone_detection_is_accepted(mocker) -> None:
     yolo_result.boxes.xyxy.tolist.return_value = [
         [180.0, 220.0, 220.0, 280.0],
     ]
+    yolo_result.boxes.id = None
     yolo_cls.return_value.predict.return_value = [yolo_result]
+    yolo_cls.return_value.track.return_value = [yolo_result]
 
     persons, carryables = engine._detect_persons_and_carryables("frame")
 

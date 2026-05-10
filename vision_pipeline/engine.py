@@ -34,7 +34,8 @@ from ultralytics import YOLO
 from .clip_writer import write_clip
 from .config import CONFIG, Config
 from .events import VISION_LANGUAGE_PROMPT, build_event, evaluate_classifier_output
-from .face_filter import FaceFilter, PersonVerdict
+from .face_filter import FaceFilter, InsightFaceEmbedder, PersonVerdict
+from .track_identity import TrackIdentityResolver, TrackVerdict
 from .publisher import post_event, post_ready_signal
 
 FRAME_BUFFER_MAXLEN = 150
@@ -91,6 +92,10 @@ class Detection:
     label: str
     confidence: float
     box: tuple[float, float, float, float]  # x1, y1, x2, y2 in pixels
+    # ByteTrack-assigned track id when the detection comes through `yolo.track()`.
+    # None for the first frames before the tracker confirms a track, or when
+    # callers go through the legacy `yolo.predict()` path.
+    track_id: int | None = None
 
 
 @dataclass
@@ -753,22 +758,45 @@ class VisionEngine:
         # Throttle for the per-frame "suppressed by face filter" log line.
         self._last_face_suppress_log_at: float = 0.0
 
-        # Face exclusion filter: built lazily so an InsightFace import error
-        # only matters when the filter is actually enabled.
+        # Face exclusion: built lazily so an InsightFace / onnxruntime import
+        # error only matters when the feature is actually enabled. The
+        # resolver wraps FaceFilter with track-anchored identity (one clean
+        # face read tags the YOLO+ByteTrack track id, surviving brief
+        # occlusions) and an optional body-ReID fallback for ID switches.
         self.face_filter: FaceFilter | None = None
+        self.face_resolver: TrackIdentityResolver | None = None
         if config.face_filter_enabled:
             try:
+                embedder = InsightFaceEmbedder(
+                    model_name=config.face_model_name,
+                    apply_clahe=config.face_clahe_enabled,
+                )
                 self.face_filter = FaceFilter(
                     db_path=config.face_db_path,
                     similarity_threshold=config.face_similarity_threshold,
                     min_face_pixels=config.face_min_pixels,
+                    min_det_score=config.face_min_det_score,
+                    max_yaw_degrees=config.face_max_yaw_degrees,
+                    max_pitch_degrees=config.face_max_pitch_degrees,
+                    topk_match=config.face_topk_match,
+                    embedder=embedder,
+                )
+                body_embedder = self._build_body_embedder() if config.face_body_reid_enabled else None
+                self.face_resolver = TrackIdentityResolver(
+                    self.face_filter,
+                    body_embedder=body_embedder,
+                    anchor_ttl_seconds=config.face_anchor_ttl_seconds,
+                    anchor_min_frames=config.face_anchor_min_frames,
+                    strong_anchor_similarity=config.face_strong_anchor_similarity,
+                    body_reid_threshold=config.face_body_reid_threshold,
                 )
             except Exception:
                 log.exception(
-                    "Face filter failed to initialize; continuing without it. "
+                    "Face exclusion failed to initialize; continuing without it. "
                     "Set FACE_FILTER_ENABLED=false to silence this."
                 )
                 self.face_filter = None
+                self.face_resolver = None
 
         self.yolo = YOLO(config.yolo_model)
         self.yolo.to(self.device)
@@ -1052,14 +1080,24 @@ class VisionEngine:
     def _detect_persons_and_carryables(
         self, frame_bgr: Any
     ) -> tuple[list[Detection], list[Detection]]:
-        """Run YOLO once at the lower threshold and post-filter per class."""
+        """Run YOLO with built-in ByteTrack and post-filter per class.
+
+        We use `track(persist=True)` instead of `predict()` so each detection
+        carries a stable track id across frames. The track id is what lets the
+        face-exclusion layer ride through brief face occlusions (e.g. someone
+        bending over a package): identity is anchored on the track, not the
+        per-frame face read. Falls back to predict-style results if the YOLO
+        backend doesn't expose `.id`.
+        """
         lower_conf = min(self.config.person_confidence, self.config.carryable_confidence)
-        results = self.yolo.predict(
+        results = self.yolo.track(
             source=frame_bgr,
             classes=self._monitored_class_ids,
             conf=lower_conf,
             device=self.device,
             imgsz=self.config.yolo_input_size,
+            persist=True,
+            tracker="bytetrack.yaml",
             verbose=False,
         )
         if not results:
@@ -1078,6 +1116,22 @@ class VisionEngine:
         except AttributeError:
             return [], []
 
+        # `boxes.id` is None on frames before ByteTrack confirms tracks, and
+        # rows can be NaN for unconfirmed detections — handle both.
+        id_list: list[int | None]
+        raw_ids = getattr(boxes, "id", None)
+        if raw_ids is None:
+            id_list = [None] * len(cls_list)
+        else:
+            try:
+                id_values = raw_ids.tolist()
+            except AttributeError:
+                id_values = list(raw_ids)
+            id_list = [
+                int(v) if v is not None and not (isinstance(v, float) and v != v) else None
+                for v in id_values
+            ]
+
         persons: list[Detection] = []
         carryables: list[Detection] = []
         if hasattr(frame_bgr, "shape") and len(frame_bgr.shape) >= 2:
@@ -1086,11 +1140,17 @@ class VisionEngine:
             frame_h, frame_w = self.config.capture_height, self.config.capture_width
         frame_size = (frame_w, frame_h)
         frame_area = float(frame_w * frame_h)
-        for cls_id, conf, xyxy in zip(cls_list, conf_list, xyxy_list):
+        for cls_id, conf, xyxy, track_id in zip(cls_list, conf_list, xyxy_list, id_list):
             cls_id = int(cls_id)
             label = str(names.get(cls_id, str(cls_id))) if hasattr(names, "get") else str(names[cls_id])
             box = (float(xyxy[0]), float(xyxy[1]), float(xyxy[2]), float(xyxy[3]))
-            det = Detection(cls_id=cls_id, label=label, confidence=float(conf), box=box)
+            det = Detection(
+                cls_id=cls_id,
+                label=label,
+                confidence=float(conf),
+                box=box,
+                track_id=track_id,
+            )
             if cls_id == PERSON_CLASS_ID:
                 if self._allow_person_detection(det, frame_size=frame_size, frame_area=frame_area):
                     persons.append(det)
@@ -1552,12 +1612,28 @@ class VisionEngine:
         persons: list[Detection],
         now: float,
     ) -> bool:
-        """Return True iff every person box matches a known family member.
+        """Return True iff every person on screen matches a known person.
 
-        Returns False (do not suppress) when the filter is disabled, when there
-        are no persons, or when any person is unknown / face-not-visible.
+        Routes through :class:`TrackIdentityResolver` so identity is anchored
+        on the YOLO+ByteTrack track id rather than re-checked from scratch
+        each frame. Falls back to per-frame :class:`FaceFilter` matching only
+        when the resolver is unavailable.
         """
-        if self.face_filter is None or not persons:
+        if not persons:
+            return False
+        if self.face_resolver is not None:
+            tracked_persons = [(det.track_id, det.box) for det in persons]
+            try:
+                suppress, verdicts = self.face_resolver.all_known(
+                    frame_bgr, tracked_persons, now=now
+                )
+            except Exception:
+                log.exception("Track-anchored face resolver failed; falling through.")
+                return False
+            self._log_face_verdicts(now, suppress, verdicts)
+            return suppress
+
+        if self.face_filter is None:
             return False
         person_boxes = [det.box for det in persons]
         try:
@@ -1567,26 +1643,55 @@ class VisionEngine:
         except Exception:
             log.exception("Face filter failed; falling through to classification.")
             return False
-
-        # Throttle to avoid spamming, but ALWAYS log the verdict so we can see
-        # what the filter actually thought of each person — otherwise an
-        # "unknown" or "no_face" outcome is invisible.
-        if (now - self._last_face_suppress_log_at) >= 1.0:
-            self._last_face_suppress_log_at = now
-            verdict_summary = "; ".join(
-                f"{(v.name or '?')}({v.reason}, sim={v.similarity:.2f})"
-                for v in verdicts
-            )
-            if suppress:
-                log.info(
-                    "Face filter SUPPRESSED classification: %s", verdict_summary
-                )
-            else:
-                log.info(
-                    "Face filter did NOT suppress: %s", verdict_summary
-                )
-
+        self._log_face_verdicts(now, suppress, verdicts)
         return suppress
+
+    def _log_face_verdicts(
+        self,
+        now: float,
+        suppress: bool,
+        verdicts: list[Any],
+    ) -> None:
+        """Throttle log lines so we see what the filter / resolver decided.
+
+        Accepts either ``PersonVerdict`` (legacy filter) or ``TrackVerdict``
+        (resolver) since both expose ``name``, ``similarity``, and ``reason``.
+        """
+        if (now - self._last_face_suppress_log_at) < 1.0:
+            return
+        self._last_face_suppress_log_at = now
+        verdict_summary = "; ".join(
+            f"{(getattr(v, 'name', None) or '?')}"
+            f"(track={getattr(v, 'track_id', None)}, "
+            f"{v.reason}, sim={v.similarity:.2f})"
+            for v in verdicts
+        )
+        if suppress:
+            log.info("Face exclusion SUPPRESSED classification: %s", verdict_summary)
+        else:
+            log.info("Face exclusion did NOT suppress: %s", verdict_summary)
+
+    def _build_body_embedder(self) -> Any:
+        """Lazy-import torchreid wrapper so face_filter_enabled doesn't pay
+        the torchreid import cost when body-ReID is disabled.
+
+        Returns an object with ``embed(crop_bgr) -> np.ndarray`` matching the
+        :class:`track_identity.BodyEmbedder` protocol. Returns None on import
+        failure — body-ReID is a soft dependency.
+        """
+        try:
+            from .reid import ReIDExtractor
+        except Exception:
+            log.exception(
+                "Body-ReID disabled: failed to import torchreid. "
+                "Set FACE_BODY_REID_ENABLED=false to silence this."
+            )
+            return None
+        try:
+            return ReIDExtractor()
+        except Exception:
+            log.exception("Body-ReID disabled: ReIDExtractor failed to load.")
+            return None
 
     def _emit_family_ambient_event(
         self,

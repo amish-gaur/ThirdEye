@@ -51,6 +51,8 @@ class FaceEmbedding:
     bbox: Box                  # box in the frame's coordinate frame
     embedding: np.ndarray      # L2-normalized float32 vector
     det_score: float = 1.0     # face-detector confidence
+    yaw: float | None = None   # head yaw in degrees, when the embedder reports it
+    pitch: float | None = None # head pitch in degrees, when reported
 
 
 @dataclass(frozen=True)
@@ -94,17 +96,30 @@ class FaceEmbedder(Protocol):
 
 
 class InsightFaceEmbedder:
-    """Default embedder backed by InsightFace `buffalo_s` (ArcFace).
+    """Default embedder backed by InsightFace ArcFace.
+
+    Defaults to `buffalo_l` (ResNet-50, WebFace600K) which gains ~6 points
+    of TAR@FAR=1e-4 over `buffalo_s` on hard / off-angle / low-resolution
+    faces typical of porch cameras. Override via the `INSIGHTFACE_MODEL`
+    env var if you need the smaller model on a constrained device.
+
+    `apply_clahe` runs Contrast Limited Adaptive Histogram Equalization on
+    the L-channel of LAB before detection. This measurably helps backlit
+    porch scenes (sun-behind-visitor, hard shadows) without distorting the
+    face-recognition embedding distribution.
 
     Lazy-loaded so importing `face_filter` doesn't pull in onnxruntime."""
 
     def __init__(
         self,
-        model_name: str = "buffalo_s",
+        model_name: str = "buffalo_l",
         det_size: tuple[int, int] = (640, 640),
+        *,
+        apply_clahe: bool = True,
     ) -> None:
         self.model_name = model_name
         self.det_size = det_size
+        self.apply_clahe = bool(apply_clahe)
         self._app: Any | None = None
         self._lock = threading.Lock()
 
@@ -133,7 +148,8 @@ class InsightFaceEmbedder:
 
     def detect_and_embed(self, bgr_image: np.ndarray) -> list[FaceEmbedding]:
         app = self._ensure_loaded()
-        faces = app.get(bgr_image)
+        image = self._maybe_clahe(bgr_image)
+        faces = app.get(image)
         out: list[FaceEmbedding] = []
         for face in faces:
             embedding = getattr(face, "normed_embedding", None)
@@ -146,8 +162,54 @@ class InsightFaceEmbedder:
                 embedding = np.asarray(embedding, dtype=np.float32)
             bbox = tuple(float(v) for v in face.bbox.astype(float))
             det_score = float(getattr(face, "det_score", 1.0))
-            out.append(FaceEmbedding(bbox=bbox, embedding=embedding, det_score=det_score))
+            yaw, pitch = _pose_from_face(face)
+            out.append(FaceEmbedding(
+                bbox=bbox,
+                embedding=embedding,
+                det_score=det_score,
+                yaw=yaw,
+                pitch=pitch,
+            ))
         return out
+
+    def _maybe_clahe(self, bgr_image: np.ndarray) -> np.ndarray:
+        """Apply CLAHE to the L-channel for backlit / hard-shadow scenes.
+
+        ArcFace was trained on natural images so we keep this conservative
+        (clip=2.0, 8x8 grid). Skips silently if cv2 is unavailable so the
+        unit-test path that injects a stub embedder doesn't pull in OpenCV.
+        """
+        if not self.apply_clahe or bgr_image is None or bgr_image.size == 0:
+            return bgr_image
+        try:
+            import cv2  # local import to keep the test stub path cv2-free
+        except ImportError:
+            return bgr_image
+        if bgr_image.ndim != 3 or bgr_image.shape[2] != 3:
+            return bgr_image
+        lab = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        l = clahe.apply(l)
+        merged = cv2.merge((l, a, b))
+        return cv2.cvtColor(merged, cv2.COLOR_LAB2BGR)
+
+
+def _pose_from_face(face: Any) -> tuple[float | None, float | None]:
+    """Extract (yaw, pitch) from an InsightFace Face object if available.
+
+    InsightFace exposes Euler angles via `face.pose = (pitch, yaw, roll)`
+    in radians on supported backbones. Returns (None, None) on absence so
+    callers can degrade gracefully.
+    """
+    pose = getattr(face, "pose", None)
+    if pose is None:
+        return None, None
+    try:
+        pitch_rad, yaw_rad, _roll = (float(x) for x in pose)
+    except (TypeError, ValueError):
+        return None, None
+    return float(np.degrees(yaw_rad)), float(np.degrees(pitch_rad))
 
 
 # ---------------------------------------------------------------------------
@@ -167,13 +229,21 @@ class FaceFilter:
         self,
         *,
         db_path: str | Path,
-        similarity_threshold: float = 0.45,
-        min_face_pixels: int = 40,
+        similarity_threshold: float = 0.40,
+        min_face_pixels: int = 64,
+        min_det_score: float = 0.5,
+        max_yaw_degrees: float = 35.0,
+        max_pitch_degrees: float = 25.0,
+        topk_match: int = 3,
         embedder: FaceEmbedder | None = None,
     ) -> None:
         self.db_path = Path(db_path)
         self.similarity_threshold = float(similarity_threshold)
         self.min_face_pixels = int(min_face_pixels)
+        self.min_det_score = float(min_det_score)
+        self.max_yaw_degrees = float(max_yaw_degrees)
+        self.max_pitch_degrees = float(max_pitch_degrees)
+        self.topk_match = max(1, int(topk_match))
         self._embedder = embedder if embedder is not None else InsightFaceEmbedder()
         self._known: list[_KnownPerson] = load_database(self.db_path)
         if not self._known:
@@ -264,6 +334,12 @@ class FaceFilter:
             return PersonVerdict(None, 0.0, "no_face")
         if _box_short_edge(face.bbox) < self.min_face_pixels:
             return PersonVerdict(None, 0.0, "face_too_small")
+        if face.det_score < self.min_det_score:
+            return PersonVerdict(None, 0.0, "low_quality")
+        if face.yaw is not None and abs(face.yaw) > self.max_yaw_degrees:
+            return PersonVerdict(None, 0.0, "extreme_yaw")
+        if face.pitch is not None and abs(face.pitch) > self.max_pitch_degrees:
+            return PersonVerdict(None, 0.0, "extreme_pitch")
         if not self._known:
             return PersonVerdict(None, 0.0, "unknown")
         best_name, best_sim = self._best_match(face.embedding)
@@ -271,13 +347,55 @@ class FaceFilter:
             return PersonVerdict(best_name, best_sim, "known")
         return PersonVerdict(None, best_sim, "unknown")
 
+    def passes_quality_gate(self, face: FaceEmbedding) -> bool:
+        """Whether a detected face is good enough to contribute to identity.
+
+        Used by the track-anchored identity resolver to decide which face
+        embeddings to feed into per-track averaging.
+        """
+        if _box_short_edge(face.bbox) < self.min_face_pixels:
+            return False
+        if face.det_score < self.min_det_score:
+            return False
+        if face.yaw is not None and abs(face.yaw) > self.max_yaw_degrees:
+            return False
+        if face.pitch is not None and abs(face.pitch) > self.max_pitch_degrees:
+            return False
+        return True
+
+    def match_embedding(self, embedding: np.ndarray) -> tuple[str | None, float]:
+        """Match an externally-computed (or averaged) embedding against the DB.
+
+        Returns (name_if_match_else_None, best_similarity). Used by the
+        track-anchored resolver after it averages embeddings across frames.
+        """
+        if not self._known:
+            return None, 0.0
+        best_name, best_sim = self._best_match(np.asarray(embedding, dtype=np.float32))
+        if best_sim >= self.similarity_threshold:
+            return best_name, best_sim
+        return None, best_sim
+
     def _best_match(self, query: np.ndarray) -> tuple[str, float]:
-        """Cosine similarity against every enrolled embedding."""
+        """Top-K-mean cosine similarity against every enrolled person.
+
+        Falls back to best-of-1 when an enrolled person has fewer than K
+        embeddings. Top-K mean is the IJB-C "template" trick: averaging the
+        top K nearest enrolled embeddings is more robust than best-of-1
+        because a single outlier enrollment photo can no longer poison the
+        decision in either direction.
+        """
         best_name = ""
         best_sim = -1.0
         for person in self._known:
             sims = person.embeddings @ query  # both rows are L2-normalized
-            top = float(sims.max())
+            k = min(self.topk_match, sims.shape[0])
+            if k <= 1:
+                top = float(sims.max())
+            else:
+                # Take the K largest (unsorted) and average — cheaper than full sort.
+                topk = np.partition(sims, -k)[-k:]
+                top = float(topk.mean())
             if top > best_sim:
                 best_sim = top
                 best_name = person.name
