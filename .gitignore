@@ -28,3 +28,15 @@ yolo11n.pt
 
 # Family-face enrollment artifacts (photos + embeddings stay on-device).
 family_faces/
+.gstack/
+
+# JS/TS workspace
+node_modules/
+.next/
+*.tsbuildinfo
+.turbo/
+.vercel/
+dist/
+build/
+.pnpm-store/
+.claude/
