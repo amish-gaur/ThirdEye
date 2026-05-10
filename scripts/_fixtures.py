@@ -1,4 +1,15 @@
-"""Shared event fixtures for smoke-test scripts and unit tests."""
+"""Shared event fixtures for smoke-test scripts and unit tests.
+
+IMPORTANT: These fixtures are used ONLY by:
+  - the unit tests (`tests/`)
+  - the manual smoke-test scripts (`scripts/send_test_event.py`,
+    `scripts/test_narration.py`)
+
+They are NEVER used by the live vision pipeline (`scripts/run_vision.py`).
+The real camera path generates every description, scene, and summary from
+Qwen on each frame — nothing in this file ever reaches a real Twilio call
+unless you explicitly invoke `send_test_event` yourself for a dry rehearsal.
+"""
 
 from __future__ import annotations
 

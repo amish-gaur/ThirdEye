@@ -116,6 +116,27 @@ class BehaviorDecision:
     near_miss: bool = False  # for failure-artifact saving
 
 
+@dataclass
+class LastClassification:
+    """Last Qwen output we successfully classified.
+
+    Held by the engine so the camera overlay can render Qwen's live
+    description / scene / behavior in real time. This is purely visual
+    feedback so you can see what Qwen is saying about you while you demo.
+    """
+    timestamp: float = 0.0
+    tier: int = 0
+    behavior_pattern: str = ""
+    confidence: float = 0.0
+    scene: str = ""
+    suspect_description: str = ""
+    one_line_summary: str = ""
+
+    @property
+    def is_set(self) -> bool:
+        return self.timestamp > 0
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -426,11 +447,21 @@ class BehaviorTracker:
 # ---------------------------------------------------------------------------
 
 
+_TIER_LABELS_OVERLAY = {1: "AMBIENT", 2: "NOTICE", 3: "ALERT", 4: "EMERGENCY"}
+_TIER_COLORS = {
+    1: (160, 160, 160),  # gray
+    2: (0, 220, 255),    # yellow
+    3: (0, 140, 255),    # orange
+    4: (0, 0, 255),      # red
+}
+
+
 def _draw_overlay(
     frame_bgr: Any,
     *,
     config: Config,
     decision: BehaviorDecision,
+    last_classification: "LastClassification | None" = None,
 ) -> None:
     h, w = frame_bgr.shape[:2]
     zone = config.entry_zone
@@ -478,6 +509,59 @@ def _draw_overlay(
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (240, 240, 240), 1, cv2.LINE_AA)
         y += 22
 
+    # Bottom panel: live Qwen description so you SEE what the model thinks of you.
+    if last_classification is not None and last_classification.is_set:
+        _draw_qwen_panel(frame_bgr, last_classification)
+
+
+def _draw_qwen_panel(frame_bgr: Any, cls: "LastClassification") -> None:
+    """Render Qwen's latest description as a translucent panel at the bottom."""
+    h, w = frame_bgr.shape[:2]
+    panel_h = 110
+    overlay = frame_bgr.copy()
+    cv2.rectangle(overlay, (0, h - panel_h), (w, h), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.55, frame_bgr, 0.45, 0, frame_bgr)
+
+    age_s = max(0.0, time.time() - cls.timestamp)
+    tier_label = _TIER_LABELS_OVERLAY.get(cls.tier, "?")
+    tier_color = _TIER_COLORS.get(cls.tier, (200, 200, 200))
+
+    header = (
+        f"QWEN  T{cls.tier} {tier_label}  "
+        f"conf {cls.confidence:.2f}  "
+        f"pattern {cls.behavior_pattern or '-'}  "
+        f"({age_s:.1f}s ago)"
+    )
+    _put_outlined(frame_bgr, header, (12, h - panel_h + 22), 0.55, tier_color)
+
+    scene_text = f"scene : {cls.scene or '-'}"
+    desc_text = f"desc  : {cls.suspect_description or '-'}"
+    summary_text = f"behave: {cls.one_line_summary or '-'}"
+
+    for i, line in enumerate((scene_text, desc_text, summary_text)):
+        _put_outlined(
+            frame_bgr,
+            _truncate_for_overlay(line, max_chars=int(w / 8.5)),
+            (12, h - panel_h + 50 + i * 22),
+            0.5,
+            (240, 240, 240),
+        )
+
+
+def _put_outlined(
+    frame_bgr: Any, text: str, origin: tuple[int, int], scale: float, color: tuple[int, int, int]
+) -> None:
+    cv2.putText(frame_bgr, text, origin, cv2.FONT_HERSHEY_SIMPLEX, scale,
+                (0, 0, 0), 3, cv2.LINE_AA)
+    cv2.putText(frame_bgr, text, origin, cv2.FONT_HERSHEY_SIMPLEX, scale,
+                color, 1, cv2.LINE_AA)
+
+
+def _truncate_for_overlay(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[: max(0, max_chars - 1)] + "\u2026"
+
 
 def _draw_box(frame_bgr: Any, det: Detection, *, color: tuple[int, int, int], thickness: int) -> None:
     x1, y1, x2, y2 = (int(v) for v in det.box)
@@ -512,6 +596,9 @@ class VisionEngine:
         self._artifact_dir_ensured = False
         # Demo-mode flag driving carryable label set
         self._carryable_label_set: set[str] = set(config.carryable_labels)
+        # Latest Qwen output, surfaced on the camera overlay so you can SEE
+        # what the model is saying about you in real time.
+        self.last_classification = LastClassification()
 
         self.yolo = YOLO(config.yolo_model)
         self.yolo.to(self.device)
@@ -639,6 +726,7 @@ class VisionEngine:
                                 yolo_classes=yolo_classes,
                                 raw_classifier=raw,
                             )
+                            self._update_last_classification(event)
                             print(json.dumps(event, ensure_ascii=True))
                             self._publish_event(event)
                         fired = True
@@ -670,7 +758,14 @@ class VisionEngine:
 
                 if self.show_window:
                     if self.config.debug_overlay:
-                        _draw_overlay(frame, config=self.config, decision=decision)
+                        with self.state_lock:
+                            last_cls = self.last_classification
+                        _draw_overlay(
+                            frame,
+                            config=self.config,
+                            decision=decision,
+                            last_classification=last_cls,
+                        )
                     cv2.imshow("ThirdEye Vision Engine", frame)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         break
@@ -864,6 +959,7 @@ class VisionEngine:
                     raw_classifier=raw_answer,
                     timestamp=request.timestamp,
                 )
+                self._update_last_classification(event)
                 print(json.dumps(event, ensure_ascii=True))
                 self._publish_event(event)
             except Exception:
@@ -975,6 +1071,19 @@ class VisionEngine:
             mps.empty_cache()
         except RuntimeError:
             pass
+
+    def _update_last_classification(self, event: dict[str, Any]) -> None:
+        """Cache the latest Qwen output so the camera overlay can render it."""
+        with self.state_lock:
+            self.last_classification = LastClassification(
+                timestamp=time.time(),
+                tier=int(event.get("tier", 0)),
+                behavior_pattern=str(event.get("behavior_pattern", "")),
+                confidence=float(event.get("confidence", 0.0)),
+                scene=str(event.get("scene", "")),
+                suspect_description=str(event.get("suspect_description", "")),
+                one_line_summary=str(event.get("one_line_summary", "")),
+            )
 
     def _publish_event(self, event: dict[str, Any]) -> None:
         if not self.config.post_events:
