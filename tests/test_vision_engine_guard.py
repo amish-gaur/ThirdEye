@@ -7,6 +7,7 @@ from vision_pipeline.config import Config
 from vision_pipeline.engine import (
     BOX_CLASS_IDS,
     BehaviorTracker,
+    BufferedFrame,
     CandidateContext,
     ClassificationRequest,
     Detection,
@@ -39,6 +40,7 @@ def _cfg(**overrides):
         qwen_min_pixels=256 * 28 * 28,
         qwen_max_pixels=512 * 28 * 28,
         qwen_frame_max_edge=512,
+        qwen_frame_lookback_seconds=1.2,
         classification_cooldown_seconds=8.0,
         action_router_url="http://127.0.0.1:8001/event",
         person_confidence=0.45,
@@ -52,10 +54,15 @@ def _cfg(**overrides):
         save_failure_artifacts=False,
         debug_artifact_dir="./debug_vision_test",
         entry_zone=ZONE,
-        carryable_labels=("backpack", "handbag", "suitcase"),
+        carryable_labels=("backpack", "handbag", "suitcase", "laptop", "cell phone"),
         interaction_frames_required=4,
         min_dwell_seconds=0.3,
         carryable_grace_seconds=0.6,
+        stationary_object_min_seconds=1.0,
+        removal_interaction_window_seconds=2.0,
+        stationary_object_distance_pixels=48.0,
+        person_min_area_ratio=0.015,
+        edge_margin_ratio=0.04,
         person_exit_seconds=1.5,
         scene_clear_seconds=3.5,
         pair_iou_threshold=0.0,
@@ -158,6 +165,7 @@ def test_submit_classification_marks_in_flight(mocker) -> None:
 def test_detected_classes_requests_person_and_carryable_objects(mocker) -> None:
     mocker.patch("vision_pipeline.engine.require_mps", return_value="mps")
     yolo_cls = mocker.patch("vision_pipeline.engine.YOLO")
+    yolo_cls.return_value.names = {0: "person", 24: "backpack", 26: "handbag", 28: "suitcase"}
 
     engine = VisionEngine(_cfg(mock_classifier=True), source=0, show_window=False)
     yolo_result = mocker.Mock()
@@ -171,10 +179,42 @@ def test_detected_classes_requests_person_and_carryable_objects(mocker) -> None:
 
     assert detected == ["backpack", "person"]
     yolo_cls.return_value.predict.assert_called_once()
-    assert yolo_cls.return_value.predict.call_args.kwargs["classes"] == [
-        PERSON_CLASS_ID,
-        *BOX_CLASS_IDS,
-    ]
+    classes = yolo_cls.return_value.predict.call_args.kwargs["classes"]
+    assert PERSON_CLASS_ID in classes
+    assert 24 in classes
+
+
+def test_monitored_labels_include_laptop_and_cell_phone_when_model_supports_them(mocker) -> None:
+    mocker.patch("vision_pipeline.engine.require_mps", return_value="mps")
+    yolo_cls = mocker.patch("vision_pipeline.engine.YOLO")
+    yolo_cls.return_value.names = {
+        0: "person",
+        24: "backpack",
+        26: "handbag",
+        28: "suitcase",
+        63: "laptop",
+        67: "cell phone",
+    }
+
+    engine = VisionEngine(_cfg(mock_classifier=True), source=0, show_window=False)
+
+    assert 63 in engine._monitored_class_ids
+    assert 67 in engine._monitored_class_ids
+
+
+def test_primary_person_prefers_in_zone_detection() -> None:
+    tracker = BehaviorTracker(_cfg())
+    off_zone_person = _person(x1=500.0, y1=50.0, x2=620.0, y2=250.0)
+    in_zone_person = _person(x1=100.0, y1=50.0, x2=250.0, y2=400.0)
+    dec = tracker.update(
+        now=1000.0,
+        person_dets=[off_zone_person, in_zone_person],
+        carryable_dets=[_backpack()],
+        frame_size=FRAME_SIZE,
+    )
+
+    assert dec.candidate is not None
+    assert dec.candidate.last_person_box == in_zone_person.box
 
 
 def test_mock_classifier_skips_model_load(mocker) -> None:
@@ -262,6 +302,107 @@ def test_separate_thresholds_both_kept_when_above(mocker) -> None:
     assert len(carryables) == 1
     assert persons[0].confidence == 0.65
     assert carryables[0].confidence == 0.40
+
+
+def test_tiny_edge_person_outside_zone_is_ignored(mocker) -> None:
+    mocker.patch("vision_pipeline.engine.require_mps", return_value="mps")
+    yolo_cls = mocker.patch("vision_pipeline.engine.YOLO")
+    yolo_cls.return_value.names = {0: "person"}
+
+    engine = VisionEngine(
+        _cfg(mock_classifier=True, entry_zone=(0.2, 0.2, 0.8, 0.8)),
+        source=0,
+        show_window=False,
+    )
+
+    yolo_result = mocker.Mock()
+    yolo_result.names = {0: "person"}
+    yolo_result.boxes = mocker.Mock()
+    yolo_result.boxes.__len__ = mocker.Mock(return_value=1)
+    yolo_result.boxes.cls.tolist.return_value = [0]
+    yolo_result.boxes.conf.tolist.return_value = [0.70]
+    yolo_result.boxes.xyxy.tolist.return_value = [
+        [0.0, 40.0, 25.0, 110.0],
+    ]
+    yolo_cls.return_value.predict.return_value = [yolo_result]
+
+    persons, carryables = engine._detect_persons_and_carryables("frame")
+
+    assert persons == []
+    assert carryables == []
+
+
+def test_low_confidence_laptop_false_positive_is_ignored(mocker) -> None:
+    mocker.patch("vision_pipeline.engine.require_mps", return_value="mps")
+    yolo_cls = mocker.patch("vision_pipeline.engine.YOLO")
+    yolo_cls.return_value.names = {0: "person", 63: "laptop"}
+
+    engine = VisionEngine(_cfg(mock_classifier=True), source=0, show_window=False)
+
+    yolo_result = mocker.Mock()
+    yolo_result.names = {0: "person", 63: "laptop"}
+    yolo_result.boxes = mocker.Mock()
+    yolo_result.boxes.__len__ = mocker.Mock(return_value=1)
+    yolo_result.boxes.cls.tolist.return_value = [63]
+    yolo_result.boxes.conf.tolist.return_value = [0.35]
+    yolo_result.boxes.xyxy.tolist.return_value = [
+        [140.0, 220.0, 210.0, 300.0],
+    ]
+    yolo_cls.return_value.predict.return_value = [yolo_result]
+
+    persons, carryables = engine._detect_persons_and_carryables("frame")
+
+    assert persons == []
+    assert carryables == []
+
+
+def test_low_confidence_cell_phone_detection_is_ignored(mocker) -> None:
+    mocker.patch("vision_pipeline.engine.require_mps", return_value="mps")
+    yolo_cls = mocker.patch("vision_pipeline.engine.YOLO")
+    yolo_cls.return_value.names = {0: "person", 67: "cell phone"}
+
+    engine = VisionEngine(_cfg(mock_classifier=True), source=0, show_window=False)
+
+    yolo_result = mocker.Mock()
+    yolo_result.names = {0: "person", 67: "cell phone"}
+    yolo_result.boxes = mocker.Mock()
+    yolo_result.boxes.__len__ = mocker.Mock(return_value=1)
+    yolo_result.boxes.cls.tolist.return_value = [67]
+    yolo_result.boxes.conf.tolist.return_value = [0.68]
+    yolo_result.boxes.xyxy.tolist.return_value = [
+        [180.0, 220.0, 220.0, 280.0],
+    ]
+    yolo_cls.return_value.predict.return_value = [yolo_result]
+
+    persons, carryables = engine._detect_persons_and_carryables("frame")
+
+    assert persons == []
+    assert carryables == []
+
+
+def test_high_confidence_cell_phone_detection_is_accepted(mocker) -> None:
+    mocker.patch("vision_pipeline.engine.require_mps", return_value="mps")
+    yolo_cls = mocker.patch("vision_pipeline.engine.YOLO")
+    yolo_cls.return_value.names = {0: "person", 67: "cell phone"}
+
+    engine = VisionEngine(_cfg(mock_classifier=True), source=0, show_window=False)
+
+    yolo_result = mocker.Mock()
+    yolo_result.names = {0: "person", 67: "cell phone"}
+    yolo_result.boxes = mocker.Mock()
+    yolo_result.boxes.__len__ = mocker.Mock(return_value=1)
+    yolo_result.boxes.cls.tolist.return_value = [67]
+    yolo_result.boxes.conf.tolist.return_value = [0.85]
+    yolo_result.boxes.xyxy.tolist.return_value = [
+        [180.0, 220.0, 220.0, 280.0],
+    ]
+    yolo_cls.return_value.predict.return_value = [yolo_result]
+
+    persons, carryables = engine._detect_persons_and_carryables("frame")
+
+    assert persons == []
+    assert len(carryables) == 1
+    assert carryables[0].label == "cell phone"
 
 
 # ── NEW: Carryable grace window ─────────────────────────────────────────
@@ -597,6 +738,36 @@ def test_demo_mode_stronger_suppression_via_longer_scene_clear() -> None:
     assert normal_tracker.scene_clear_seconds == 2.0
 
 
+def test_fast_path_stays_suppressed_until_scene_clears(mocker) -> None:
+    mocker.patch("vision_pipeline.engine.require_mps", return_value="mps")
+    mocker.patch("vision_pipeline.engine.YOLO")
+
+    engine = VisionEngine(
+        _cfg(
+            mock_classifier=True,
+            scene_clear_seconds=1.0,
+            demo_fast_path=True,
+            demo_fast_path_cooldown_seconds=0.1,
+        ),
+        source=0,
+        show_window=False,
+    )
+
+    assert engine._should_fast_path([_person()], [], 1000.0) is True
+    incident_id = engine._incident_id_for_emit(1000.0)
+    engine._mark_incident_emitted(1000.0)
+    engine._last_fire_at = 1000.0
+
+    assert engine._should_fast_path([_person()], [], 1000.5) is False
+    assert engine._incident_id_for_emit(1000.6) == incident_id
+
+    engine._update_active_incident(now=1001.7, has_signal=False)
+
+    assert engine._active_incident_id is None
+    assert engine._active_incident_alert_sent is False
+    assert engine._should_fast_path([_person()], [], 1001.8) is True
+
+
 # ── NEW: CandidateContext richness ───────────────────────────────────────
 
 
@@ -655,6 +826,31 @@ def test_candidate_not_cleared_on_single_cue_disappearing() -> None:
     assert tracker.candidate is not None
 
 
+def test_recent_frame_sampling_prefers_fresh_window(mocker) -> None:
+    mocker.patch("vision_pipeline.engine.require_mps", return_value="mps")
+    mocker.patch("vision_pipeline.engine.YOLO")
+
+    engine = VisionEngine(
+        _cfg(
+            mock_classifier=True,
+            qwen_frames_per_inference=3,
+            qwen_frame_lookback_seconds=1.0,
+        ),
+        source=0,
+        show_window=False,
+    )
+    frames = []
+    for i, ts in enumerate((1000.0, 1001.5, 1001.8, 1002.0)):
+        frame = mocker.Mock(name=f"frame_{i}")
+        frame.copy.return_value = f"copy_{i}"
+        engine.frame_buffer.append(BufferedFrame(timestamp=ts, frame_bgr=frame))
+        frames.append(frame)
+
+    sampled = engine._collect_recent_frames(3)
+
+    assert sampled == ["copy_1", "copy_2", "copy_3"]
+
+
 # ── NEW: Near-miss detection ─────────────────────────────────────────────
 
 
@@ -674,3 +870,58 @@ def test_near_miss_flagged_on_partial_evidence() -> None:
     # But no actual fire
     fires = [d for d in decs if d.should_classify]
     assert len(fires) == 0
+
+
+def test_stationary_object_removal_triggers_immediate_theft_candidate() -> None:
+    cfg = _cfg(
+        interaction_frames_required=4,
+        min_dwell_seconds=0.4,
+        carryable_grace_seconds=0.2,
+        stationary_object_min_seconds=0.5,
+        removal_interaction_window_seconds=1.0,
+    )
+    tracker = BehaviorTracker(cfg)
+
+    _feed_interaction(tracker, frames=6, start_time=1000.0, dt=0.1)
+    tracker.suppression_active = False
+    tracker.last_emitted_at = 0.0
+    tracker.candidate = None
+
+    dec = tracker.update(
+        now=1000.8,
+        person_dets=[_person()],
+        carryable_dets=[],
+        frame_size=FRAME_SIZE,
+    )
+
+    assert dec.should_classify
+    assert any(c.startswith("carryable_removed:backpack") for c in dec.cues)
+    assert dec.candidate is not None
+    assert dec.candidate.last_carryable_label == "backpack"
+
+
+def test_stationary_object_disappearing_without_recent_person_interaction_does_not_trigger() -> None:
+    cfg = _cfg(
+        carryable_grace_seconds=0.2,
+        stationary_object_min_seconds=0.5,
+        removal_interaction_window_seconds=0.5,
+    )
+    tracker = BehaviorTracker(cfg)
+
+    for i in range(6):
+        tracker.update(
+            now=1000.0 + i * 0.1,
+            person_dets=[],
+            carryable_dets=[_backpack()],
+            frame_size=FRAME_SIZE,
+        )
+
+    dec = tracker.update(
+        now=1000.8,
+        person_dets=[],
+        carryable_dets=[],
+        frame_size=FRAME_SIZE,
+    )
+
+    assert not dec.should_classify
+    assert not any(c.startswith("carryable_removed:") for c in dec.cues)

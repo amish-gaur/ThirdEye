@@ -27,3 +27,17 @@ def test_event_endpoint_rejects_non_object() -> None:
     client = TestClient(create_app())
     resp = client.post("/event", json=[1, 2, 3])
     assert resp.status_code == 400
+
+
+def test_alert_response_endpoint_handles_press_one() -> None:
+    client = TestClient(create_app())
+    resp = client.post("/voice/alert-response", data={"Digits": "1", "CallSid": "CA123"})
+    assert resp.status_code == 200
+    assert "Neighbor notification request received" in resp.text
+
+
+def test_alert_response_endpoint_handles_invalid_input() -> None:
+    client = TestClient(create_app())
+    resp = client.post("/voice/alert-response", data={"Digits": "9"})
+    assert resp.status_code == 200
+    assert "No valid selection was received" in resp.text

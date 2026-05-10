@@ -27,13 +27,13 @@ DEFAULT_SCENE = "the camera view"
 
 MAX_SCRIPT_CHARS = 480  # ~30s of speech; safe for Twilio <Say> and small MP3s.
 
-SYSTEM_PROMPT = """You are SafeWatch, a calm, factual security agent.
+SYSTEM_PROMPT = """You are ThirdEye, a calm, factual security agent.
 You will be given a JSON describing a detected event. Produce a SHORT spoken script
 (25-45 words, one short paragraph, no list, no emoji, no markdown) that the
 homeowner or emergency contact will hear over an automated phone call.
 
 Style:
-- Open with "This is your SafeWatch agent." then say what happened.
+- Open with "ThirdEye is watching." then say what happened.
 - Use the SUSPECT DESCRIPTION verbatim — this is the only physical detail you may
   share. Do NOT invent clothing colors, ages, or features beyond what's given.
 - Use the SCENE verbatim when describing where the event happened
@@ -46,7 +46,7 @@ Style:
 
 Endings (REQUIRED, exact wording):
 - Tier 4 EMERGENCY: end with "Emergency services have been requested. Stay on the line."
-- Tier 3 ALERT:    end with "Press 1 to notify your neighbors, or 2 to ignore."
+- Tier 3 ALERT:    end with "This is an active alert."
 - Tier 2 NOTICE:   end with "No action is needed."
 - Tier 1 AMBIENT:  return an empty string.
 """
@@ -92,6 +92,18 @@ GENERIC_DESCRIPTIONS = {
     "individual",
     "subject",
 }
+
+LOWER_BODY_TERMS = (
+    "jeans",
+    "pants",
+    "shorts",
+    "skirt",
+    "leggings",
+    "trousers",
+    "shoes",
+    "sneakers",
+    "boots",
+)
 
 YOLO_LABEL_FRIENDLY = {
     "person": "person",
@@ -199,9 +211,8 @@ def static_template(event: Dict[str, Any]) -> str:
     """Used when Claude is unavailable / disabled."""
     safe = sanitize_event(event)
     tier = _coerce_tier(safe.get("tier", 1))
-    desc = _normalize_phrase(safe["suspect_description"])
+    desc = _spoken_description(safe["suspect_description"])
     summary = _ensure_period(_capitalize(_normalize_phrase(safe["one_line_summary"])))
-    elapsed = _humanize_elapsed(safe.get("time_elapsed", "just now"))
     pattern = safe.get("behavior_pattern", "other_benign")
     scene = safe.get("scene", DEFAULT_SCENE)
     action_phrase = _phrase_for_pattern(
@@ -209,20 +220,17 @@ def static_template(event: Dict[str, Any]) -> str:
     )
     if tier == 4:
         return _clamp(
-            f"This is your SafeWatch agent. There is an emergency at {scene}. "
-            f"{summary} "
+            f"ThirdEye is watching. At {scene}, {_capitalize(desc)} {action_phrase} "
             "Emergency services have been requested. Stay on the line."
         )
     if tier == 3:
         return _clamp(
-            f"This is your SafeWatch agent. A suspicious event was detected at {scene} {elapsed}. "
-            f"{_capitalize(desc)} {action_phrase} "
-            "I have sent the clip to your phone. "
-            "Press 1 to notify your neighbors, or 2 to ignore."
+            f"ThirdEye is watching. At {scene}, {_capitalize(desc)} {action_phrase} "
+            "This is an active alert."
         )
     if tier == 2:
         return _clamp(
-            f"This is your SafeWatch agent. {summary} "
+            f"ThirdEye update. {summary} "
             "No action is needed."
         )
     return ""
@@ -238,6 +246,26 @@ def _humanize_elapsed(text: str) -> str:
     if _NUMERIC_ELAPSED.match(text):
         return "moments ago"
     return text
+
+
+def _spoken_description(text: str) -> str:
+    """Keep the spoken description grounded to the clearest visible details.
+
+    Lower-body clothing is easy for the VLM to guess from partial frames, so
+    we strip trailing "... and dark jeans/pants/..." clauses from phone audio.
+    """
+    normalized = _normalize_phrase(text)
+    if not normalized:
+        return "an unknown person"
+    lowered = normalized.lower()
+    for term in LOWER_BODY_TERMS:
+        match = re.search(rf"\band\b[^.]*\b{re.escape(term)}\b.*$", lowered)
+        if match:
+            cutoff = match.start()
+            candidate = normalized[:cutoff].strip(" ,.;:-")
+            if candidate:
+                return candidate
+    return normalized
 
 
 # Behavior phrasing without scene — the opening sentence already states where.
@@ -296,6 +324,8 @@ def generate_script(event: Dict[str, Any], config: Config | None = None) -> str:
         return ""
     safe_event = sanitize_event(event)
     safe_event["tier"] = tier
+    if cfg.low_latency_narration and tier >= 3:
+        return static_template(safe_event)
     if not cfg.use_claude or not cfg.anthropic_api_key:
         return static_template(safe_event)
 

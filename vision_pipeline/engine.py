@@ -23,6 +23,7 @@ import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
 
 import cv2
 import torch
@@ -41,6 +42,17 @@ PERSON_CLASS_ID = 0
 BOX_CLASS_IDS = (24, 26, 28)  # backpack, handbag, suitcase
 TRIGGER_CLASS_IDS = (PERSON_CLASS_ID,) + BOX_CLASS_IDS
 CONSECUTIVE_PERSON_FRAMES = 2  # legacy export, behavior uses interaction_frames_required
+LABEL_ALIASES = {
+    "phone": "cell phone",
+    "cellphone": "cell phone",
+    "mobile phone": "cell phone",
+}
+STRICT_OBJECT_CONFIDENCE = {
+    "cell phone": 0.72,
+    "laptop": 0.60,
+    "handbag": 0.35,
+    "suitcase": 0.35,
+}
 
 # Behavior states
 STATE_IDLE = "IDLE"
@@ -86,6 +98,9 @@ class TrackMemory:
     last_interaction_at: float = 0.0
     last_box: tuple[float, float, float, float] | None = None
     last_label: str | None = None
+    anchor_box: tuple[float, float, float, float] | None = None
+    stationary_since_at: float = 0.0
+    removal_reported_at: float = 0.0
 
 
 @dataclass
@@ -176,6 +191,11 @@ def _box_diag(box: tuple[float, float, float, float]) -> float:
     return (w * w + h * h) ** 0.5
 
 
+def _box_area(box: tuple[float, float, float, float]) -> float:
+    x1, y1, x2, y2 = box
+    return max(0.0, x2 - x1) * max(0.0, y2 - y1)
+
+
 def _box_iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
     ax1, ay1, ax2, ay2 = a
     bx1, by1, bx2, by2 = b
@@ -203,6 +223,18 @@ def _point_in_zone(point: tuple[float, float], zone_norm: tuple[float, float, fl
     x2 = zone_norm[2] * fw
     y2 = zone_norm[3] * fh
     return x1 <= x <= x2 and y1 <= y <= y2
+
+
+def _touches_frame_edge(
+    box: tuple[float, float, float, float],
+    frame_size: tuple[int, int],
+    margin_ratio: float,
+) -> bool:
+    fw, fh = frame_size
+    margin_x = fw * margin_ratio
+    margin_y = fh * margin_ratio
+    x1, y1, x2, y2 = box
+    return x1 <= margin_x or y1 <= margin_y or x2 >= (fw - margin_x) or y2 >= (fh - margin_y)
 
 
 # ---------------------------------------------------------------------------
@@ -278,44 +310,74 @@ class BehaviorTracker:
 
         # 1. Update track memory from raw detections
         person_in_zone_now = False
-        primary_person: Detection | None = None
+        person_candidates: list[tuple[bool, float, float, Detection]] = []
         for det in person_dets:
-            if self.person_track is None or det.confidence > 0:
-                self.person_track = TrackMemory(
+            in_zone = _point_in_zone(_box_center(det.box), zone, frame_size)
+            if in_zone:
+                person_in_zone_now = True
+            person_candidates.append((in_zone, det.confidence, _box_area(det.box), det))
+
+        primary_person: Detection | None = None
+        if person_candidates:
+            person_candidates.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+            primary_person = person_candidates[0][3]
+            self.person_track = TrackMemory(
+                last_seen_at=now,
+                last_box=primary_person.box,
+                last_label="person",
+                last_seen_in_zone_at=now
+                if _point_in_zone(_box_center(primary_person.box), zone, frame_size)
+                else (self.person_track.last_seen_in_zone_at if self.person_track is not None else 0.0),
+            )
+
+        active_carryables: list[tuple[str, TrackMemory]] = []
+        for det in carryable_dets:
+            track_key = self._carryable_track_key(det)
+            mem = self.carryable_tracks.get(track_key)
+            if mem is None:
+                mem = TrackMemory(
                     last_seen_at=now,
                     last_box=det.box,
-                    last_label="person",
+                    last_label=det.label,
+                    anchor_box=det.box,
+                    stationary_since_at=now,
                 )
-                primary_person = det
-            if _point_in_zone(_box_center(det.box), zone, frame_size):
-                person_in_zone_now = True
-                if self.person_track is not None:
-                    self.person_track.last_seen_in_zone_at = now
-                primary_person = det
-
-        for det in carryable_dets:
-            mem = self.carryable_tracks.get(det.label)
-            if mem is None:
-                mem = TrackMemory(last_seen_at=now, last_box=det.box, last_label=det.label)
             else:
+                if self._box_shift_pixels(mem.anchor_box, det.box) > self.config.stationary_object_distance_pixels:
+                    mem.anchor_box = det.box
+                    mem.stationary_since_at = now
                 mem.last_seen_at = now
                 mem.last_box = det.box
                 mem.last_label = det.label
+                mem.anchor_box = mem.anchor_box or det.box
+                if mem.stationary_since_at <= 0:
+                    mem.stationary_since_at = now
+                mem.removal_reported_at = 0.0
             if _point_in_zone(_box_center(det.box), zone, frame_size):
                 mem.last_seen_in_zone_at = now
-            self.carryable_tracks[det.label] = mem
+            self.carryable_tracks[track_key] = mem
 
         # 2. Determine which carryables count as "still present" (grace window)
-        active_carryable: tuple[str, TrackMemory] | None = None
         active_carryable_box: tuple[float, float, float, float] | None = None
         active_carryable_label: str | None = None
-        for label, mem in self.carryable_tracks.items():
+        active_carryable_track_key: str | None = None
+        for track_key, mem in self.carryable_tracks.items():
             if (now - mem.last_seen_at) <= self.carryable_grace_seconds and mem.last_box is not None:
-                # Prefer the most recently seen carryable
-                if active_carryable is None or mem.last_seen_at > active_carryable[1].last_seen_at:
-                    active_carryable = (label, mem)
-                    active_carryable_box = mem.last_box
-                    active_carryable_label = label
+                active_carryables.append((track_key, mem))
+
+        if primary_person is not None and active_carryables:
+            chosen_track_key, chosen_mem = min(
+                active_carryables,
+                key=lambda item: self._pair_distance_score(primary_person.box, item[1].last_box),
+            )
+            active_carryable_box = chosen_mem.last_box
+            active_carryable_label = chosen_mem.last_label
+            active_carryable_track_key = chosen_track_key
+        elif active_carryables:
+            chosen_track_key, chosen_mem = max(active_carryables, key=lambda item: item[1].last_seen_at)
+            active_carryable_box = chosen_mem.last_box
+            active_carryable_label = chosen_mem.last_label
+            active_carryable_track_key = chosen_track_key
 
         # 3. Build cues
         if person_in_zone_now:
@@ -340,9 +402,40 @@ class BehaviorTracker:
             ):
                 paired = True
                 cues.append("person_carryable_pair")
+                if active_carryable_track_key is not None:
+                    self.carryable_tracks[active_carryable_track_key].last_interaction_at = now
+
+        removed_mem: TrackMemory | None = None
+        removed_label: str | None = None
+        for _, mem in sorted(
+            self.carryable_tracks.items(),
+            key=lambda item: item[1].last_interaction_at,
+            reverse=True,
+        ):
+            stationary_long_enough = (
+                mem.anchor_box is not None
+                and mem.stationary_since_at > 0
+                and (mem.last_seen_at - mem.stationary_since_at) >= self.config.stationary_object_min_seconds
+            )
+            recently_missing = (now - mem.last_seen_at) > self.carryable_grace_seconds
+            recent_person_interaction = (
+                mem.last_interaction_at > 0
+                and (now - mem.last_interaction_at) <= self.config.removal_interaction_window_seconds
+            )
+            if (
+                stationary_long_enough
+                and recently_missing
+                and recent_person_interaction
+                and mem.removal_reported_at <= 0
+            ):
+                mem.removal_reported_at = now
+                removed_mem = mem
+                removed_label = mem.last_label
+                cues.append(f"carryable_removed:{removed_label}")
+                break
 
         # 5. Update or build candidate
-        interaction_signal = paired and person_in_zone_now
+        interaction_signal = (paired and person_in_zone_now) or (removed_mem is not None)
         if interaction_signal:
             if self.candidate is None:
                 self.candidate = CandidateContext(
@@ -350,18 +443,33 @@ class BehaviorTracker:
                     last_seen_at=now,
                 )
             cand = self.candidate
-            # Accumulate dwell from previous frame
-            if self._last_frame_time > 0:
+            # Object removal should be able to fire immediately once the anchor
+            # object disappears after a recent person interaction.
+            if removed_mem is None and self._last_frame_time > 0:
                 dt = max(0.0, min(1.0, now - self._last_frame_time))
                 cand.recent_zone_dwell += dt
             cand.last_seen_at = now
             cand.last_zone_seen_at = now
             cand.last_carryable_seen_at = now
-            cand.last_carryable_label = active_carryable_label
-            cand.last_person_box = primary_person.box if primary_person else cand.last_person_box
-            cand.last_carryable_box = active_carryable_box
-            cand.interaction_frames += 1
-            cand.last_scene_signature = f"{active_carryable_label}|inzone"
+            if removed_mem is not None:
+                cand.last_carryable_label = removed_label
+                cand.last_person_box = (
+                    primary_person.box
+                    if primary_person
+                    else self.person_track.last_box
+                    if self.person_track is not None
+                    else cand.last_person_box
+                )
+                cand.last_carryable_box = removed_mem.anchor_box or removed_mem.last_box
+                cand.interaction_frames = max(cand.interaction_frames, self.interaction_frames_required)
+                cand.recent_zone_dwell = max(cand.recent_zone_dwell, self.min_dwell_seconds)
+                cand.last_scene_signature = f"{removed_label}|removed"
+            else:
+                cand.last_carryable_label = active_carryable_label
+                cand.last_person_box = primary_person.box if primary_person else cand.last_person_box
+                cand.last_carryable_box = active_carryable_box
+                cand.interaction_frames += 1
+                cand.last_scene_signature = f"{active_carryable_label}|inzone"
             cand.cues = list(cues)
 
         # 6. Determine state + suppression / scene-clear
@@ -441,6 +549,35 @@ class BehaviorTracker:
             if since_in_zone >= self.config.person_exit_seconds and not carryable_active:
                 return True
         return False
+
+    @staticmethod
+    def _pair_distance_score(
+        person_box: tuple[float, float, float, float],
+        carryable_box: tuple[float, float, float, float] | None,
+    ) -> tuple[float, float]:
+        if carryable_box is None:
+            return (float("inf"), float("inf"))
+        iou = _box_iou(person_box, carryable_box)
+        cx_p, cy_p = _box_center(person_box)
+        cx_c, cy_c = _box_center(carryable_box)
+        dist = ((cx_p - cx_c) ** 2 + (cy_p - cy_c) ** 2) ** 0.5
+        return (dist, -iou)
+
+    @staticmethod
+    def _carryable_track_key(det: Detection) -> str:
+        cx, cy = _box_center(det.box)
+        return f"{det.label}:{int(cx // 80)}:{int(cy // 80)}"
+
+    @staticmethod
+    def _box_shift_pixels(
+        anchor_box: tuple[float, float, float, float] | None,
+        current_box: tuple[float, float, float, float],
+    ) -> float:
+        if anchor_box is None:
+            return 0.0
+        ax, ay = _box_center(anchor_box)
+        cx, cy = _box_center(current_box)
+        return ((ax - cx) ** 2 + (ay - cy) ** 2) ** 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -596,17 +733,25 @@ class VisionEngine:
         self.behavior = BehaviorTracker(config)
         self._artifact_dir_ensured = False
         # Demo-mode flag driving carryable label set
-        self._carryable_label_set: set[str] = set(config.carryable_labels)
+        self._carryable_label_set: set[str] = {
+            self._normalize_monitored_label(label) for label in config.carryable_labels
+        }
         # Latest Qwen output, surfaced on the camera overlay so you can SEE
         # what the model is saying about you in real time.
         self.last_classification = LastClassification()
         # Last time we fired a Qwen classification — used by the demo fast-path.
         self._last_fire_at: float = 0.0
+        # Sticky incident lifecycle so one continuous scene only emits once.
+        self._active_incident_id: str | None = None
+        self._active_incident_last_signal_at: float = 0.0
+        self._active_incident_alert_sent: bool = False
         # Throttle for "why didn't this fire" debug log so we don't spam.
         self._last_fire_block_log_at: float = 0.0
+        self._router_url_warned = False
 
         self.yolo = YOLO(config.yolo_model)
         self.yolo.to(self.device)
+        self._monitored_class_ids = self._resolve_monitored_class_ids()
 
         self.processor = None
         self.qwen = None
@@ -685,11 +830,11 @@ class VisionEngine:
                 )
 
                 fh, fw = frame.shape[:2]
-                if self._classification_busy():
-                    persons: list[Detection] = []
-                    carryables: list[Detection] = []
-                else:
-                    persons, carryables = self._detect_persons_and_carryables(frame)
+                persons, carryables = self._detect_persons_and_carryables(frame)
+                self._update_active_incident(
+                    now=captured_at,
+                    has_signal=bool(persons or carryables),
+                )
 
                 decision = self.behavior.update(
                     now=captured_at,
@@ -750,11 +895,13 @@ class VisionEngine:
                                 frame_seq=self.frame_seq,
                                 yolo_classes=yolo_classes,
                                 raw_classifier=raw,
+                                incident_id=self._incident_id_for_emit(captured_at),
                             )
                             self._update_last_classification(event)
                             print(json.dumps(event, ensure_ascii=True))
                             self._publish_event(event)
                         fired = True
+                        self._mark_incident_emitted(captured_at)
                         self._last_fire_at = captured_at
                     else:
                         # Multi-frame: pass the most recent N frames so Qwen
@@ -769,6 +916,7 @@ class VisionEngine:
                         )
                         fired = self._submit_classification(request)
                         if fired:
+                            self._mark_incident_emitted(captured_at)
                             self._last_fire_at = captured_at
 
                     if self.config.save_failure_artifacts:
@@ -817,7 +965,7 @@ class VisionEngine:
         """Legacy entry-point kept for tests + simple callers."""
         results = self.yolo.predict(
             source=frame_bgr,
-            classes=[PERSON_CLASS_ID, *BOX_CLASS_IDS],
+            classes=self._monitored_class_ids,
             conf=min(self.config.person_confidence, self.config.carryable_confidence),
             device=self.device,
             imgsz=self.config.yolo_input_size,
@@ -841,7 +989,7 @@ class VisionEngine:
         lower_conf = min(self.config.person_confidence, self.config.carryable_confidence)
         results = self.yolo.predict(
             source=frame_bgr,
-            classes=[PERSON_CLASS_ID, *BOX_CLASS_IDS],
+            classes=self._monitored_class_ids,
             conf=lower_conf,
             device=self.device,
             imgsz=self.config.yolo_input_size,
@@ -865,18 +1013,94 @@ class VisionEngine:
 
         persons: list[Detection] = []
         carryables: list[Detection] = []
+        if hasattr(frame_bgr, "shape") and len(frame_bgr.shape) >= 2:
+            frame_h, frame_w = frame_bgr.shape[:2]
+        else:
+            frame_h, frame_w = self.config.capture_height, self.config.capture_width
+        frame_size = (frame_w, frame_h)
+        frame_area = float(frame_w * frame_h)
         for cls_id, conf, xyxy in zip(cls_list, conf_list, xyxy_list):
             cls_id = int(cls_id)
             label = str(names.get(cls_id, str(cls_id))) if hasattr(names, "get") else str(names[cls_id])
             box = (float(xyxy[0]), float(xyxy[1]), float(xyxy[2]), float(xyxy[3]))
             det = Detection(cls_id=cls_id, label=label, confidence=float(conf), box=box)
             if cls_id == PERSON_CLASS_ID:
-                if det.confidence >= self.config.person_confidence:
+                if self._allow_person_detection(det, frame_size=frame_size, frame_area=frame_area):
                     persons.append(det)
-            elif label in self._carryable_label_set:
-                if det.confidence >= self.config.carryable_confidence:
+            elif self._normalize_monitored_label(label) in self._carryable_label_set:
+                if self._allow_carryable_detection(det, frame_bgr=frame_bgr, frame_size=frame_size):
                     carryables.append(det)
         return persons, carryables
+
+    def _allow_person_detection(
+        self,
+        det: Detection,
+        *,
+        frame_size: tuple[int, int],
+        frame_area: float,
+    ) -> bool:
+        if det.confidence < self.config.person_confidence:
+            return False
+        in_zone = _point_in_zone(_box_center(det.box), self.config.entry_zone, frame_size)
+        if in_zone:
+            return True
+        area_ratio = _box_area(det.box) / max(frame_area, 1.0)
+        if area_ratio < self.config.person_min_area_ratio:
+            return False
+        if _touches_frame_edge(det.box, frame_size, self.config.edge_margin_ratio):
+            return False
+        return True
+
+    def _allow_carryable_detection(
+        self,
+        det: Detection,
+        *,
+        frame_bgr: Any,
+        frame_size: tuple[int, int],
+    ) -> bool:
+        _ = frame_bgr
+        normalized = self._normalize_monitored_label(det.label)
+        min_conf = max(
+            self.config.carryable_confidence,
+            STRICT_OBJECT_CONFIDENCE.get(normalized, self.config.carryable_confidence),
+        )
+        if det.confidence < min_conf:
+            return False
+        if not _point_in_zone(_box_center(det.box), self.config.entry_zone, frame_size):
+            return False
+        if _touches_frame_edge(det.box, frame_size, self.config.edge_margin_ratio):
+            return False
+        return True
+
+    def _resolve_monitored_class_ids(self) -> list[int]:
+        names = getattr(self.yolo, "names", None)
+        if names is None:
+            names = getattr(getattr(self.yolo, "model", None), "names", None)
+        if isinstance(names, list):
+            name_map = {idx: str(label) for idx, label in enumerate(names)}
+        elif isinstance(names, dict):
+            name_map = {int(idx): str(label) for idx, label in names.items()}
+        else:
+            log.warning("Could not resolve YOLO class names; falling back to legacy carryable ids.")
+            return [PERSON_CLASS_ID, *BOX_CLASS_IDS]
+
+        inverse = {self._normalize_monitored_label(label): idx for idx, label in name_map.items()}
+        class_ids = {PERSON_CLASS_ID}
+        missing: list[str] = []
+        for label in self._carryable_label_set:
+            idx = inverse.get(label)
+            if idx is None:
+                missing.append(label)
+                continue
+            class_ids.add(idx)
+        if missing:
+            log.warning("Configured removable labels missing from YOLO model: %s", ", ".join(sorted(missing)))
+        return sorted(class_ids)
+
+    @staticmethod
+    def _normalize_monitored_label(label: str) -> str:
+        cleaned = str(label).strip().lower()
+        return LABEL_ALIASES.get(cleaned, cleaned)
 
     # ---------------------------------------------------------------------
     # Classifier worker
@@ -990,6 +1214,7 @@ class VisionEngine:
                     yolo_classes=request.yolo_classes,
                     raw_classifier=raw_answer,
                     timestamp=request.timestamp,
+                    incident_id=self._incident_id_for_emit(request.timestamp),
                 )
                 self._update_last_classification(event)
                 print(json.dumps(event, ensure_ascii=True))
@@ -1122,21 +1347,52 @@ class VisionEngine:
             return False
         if not persons:
             return False
+        if self._active_incident_alert_sent or self.behavior.suppression_active:
+            return False
         if self._classification_busy():
             return False
         if (now - self._last_fire_at) < self.config.demo_fast_path_cooldown_seconds:
             return False
         return True
 
+    def _incident_id_for_emit(self, now: float) -> str:
+        if self._active_incident_id is None:
+            self._active_incident_id = f"inc_{uuid.uuid4().hex[:12]}"
+        self._active_incident_last_signal_at = max(self._active_incident_last_signal_at, now)
+        return self._active_incident_id
+
+    def _mark_incident_emitted(self, now: float) -> None:
+        self._incident_id_for_emit(now)
+        self._active_incident_alert_sent = True
+
+    def _update_active_incident(self, *, now: float, has_signal: bool) -> None:
+        if has_signal:
+            self._active_incident_last_signal_at = now
+            return
+        if self._active_incident_id is None and not self._active_incident_alert_sent:
+            return
+        if self._active_incident_last_signal_at <= 0:
+            return
+        if (now - self._active_incident_last_signal_at) < self.behavior.scene_clear_seconds:
+            return
+        self._active_incident_id = None
+        self._active_incident_last_signal_at = 0.0
+        self._active_incident_alert_sent = False
+
     def _collect_recent_frames(self, count: int) -> list[Any]:
         """Sample up to `count` frames from the rolling buffer (oldest first).
 
         Used to give Qwen multi-frame context. We sample evenly across the
-        buffer so motion (a punch, a grab) is visible across the chosen frames.
+        most recent lookback window so motion (a punch, a grab) is visible
+        without feeding Qwen stale frames from seconds ago.
         """
         if count <= 1 or len(self.frame_buffer) <= 1:
             return [self.frame_buffer[-1].frame_bgr.copy()] if self.frame_buffer else []
-        buffered = list(self.frame_buffer)
+        latest_ts = self.frame_buffer[-1].timestamp
+        min_ts = latest_ts - max(0.0, self.config.qwen_frame_lookback_seconds)
+        buffered = [b for b in self.frame_buffer if b.timestamp >= min_ts]
+        if not buffered:
+            buffered = [self.frame_buffer[-1]]
         if len(buffered) <= count:
             return [b.frame_bgr.copy() for b in buffered]
         # Evenly spaced indices, always including the most recent.
@@ -1161,6 +1417,8 @@ class VisionEngine:
             reasons.append("no carryable detected")
         if decision.candidate is None:
             reasons.append("no candidate (person + carryable not paired in zone)")
+        elif any(c.startswith("carryable_removed:") for c in decision.cues):
+            reasons.append("stationary object removal detected")
         elif decision.candidate.interaction_frames < self.behavior.interaction_frames_required:
             reasons.append(
                 f"need {self.behavior.interaction_frames_required} paired frames, "
@@ -1210,6 +1468,7 @@ class VisionEngine:
             return
 
         if result.ok:
+            self._router_url_warned = False
             log.info(
                 "Posted event %s to router (%s)",
                 event["event_id"],
@@ -1217,12 +1476,35 @@ class VisionEngine:
             )
             return
 
+        self._log_router_delivery_issue(result)
         log.warning(
             "Action router returned %s for event %s: %s",
             result.status_code,
             event["event_id"],
             result.body,
         )
+
+    def _log_router_delivery_issue(self, result: "PublishResult") -> None:
+        if self._router_url_warned:
+            return
+        parsed = urlparse(self.config.action_router_url)
+        host = parsed.netloc or parsed.path
+        body_lower = result.body.lower()
+        if "ngrok" in host and ("offline" in body_lower or "not found" in body_lower):
+            log.error(
+                "ACTION_ROUTER_URL is pointing at an offline ngrok endpoint: %s. "
+                "Start the router and update ACTION_ROUTER_URL to a live /event URL.",
+                self.config.action_router_url,
+            )
+            self._router_url_warned = True
+            return
+        if result.status_code == 404:
+            log.error(
+                "ACTION_ROUTER_URL returned 404: %s. Make sure the router is running "
+                "and the URL ends with /event.",
+                self.config.action_router_url,
+            )
+            self._router_url_warned = True
 
     @staticmethod
     def _throttle_loop(loop_started_at: float) -> None:
@@ -1270,6 +1552,7 @@ def _config_with(post_events: bool | None = None) -> Config:
         qwen_min_pixels=CONFIG.qwen_min_pixels,
         qwen_max_pixels=CONFIG.qwen_max_pixels,
         qwen_frame_max_edge=CONFIG.qwen_frame_max_edge,
+        qwen_frame_lookback_seconds=CONFIG.qwen_frame_lookback_seconds,
         classification_cooldown_seconds=CONFIG.classification_cooldown_seconds,
         action_router_url=CONFIG.action_router_url,
         person_confidence=CONFIG.person_confidence,
@@ -1287,6 +1570,11 @@ def _config_with(post_events: bool | None = None) -> Config:
         interaction_frames_required=CONFIG.interaction_frames_required,
         min_dwell_seconds=CONFIG.min_dwell_seconds,
         carryable_grace_seconds=CONFIG.carryable_grace_seconds,
+        stationary_object_min_seconds=CONFIG.stationary_object_min_seconds,
+        removal_interaction_window_seconds=CONFIG.removal_interaction_window_seconds,
+        stationary_object_distance_pixels=CONFIG.stationary_object_distance_pixels,
+        person_min_area_ratio=CONFIG.person_min_area_ratio,
+        edge_margin_ratio=CONFIG.edge_margin_ratio,
         person_exit_seconds=CONFIG.person_exit_seconds,
         scene_clear_seconds=CONFIG.scene_clear_seconds,
         pair_iou_threshold=CONFIG.pair_iou_threshold,

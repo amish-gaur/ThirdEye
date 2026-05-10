@@ -8,8 +8,9 @@
     4 EMERGENCY - parallel Twilio Play calls to dispatch + homeowner + family
 
 Person 2 hardening:
-- Idempotency: same `event_id` arriving twice within DEDUP_WINDOW_SECONDS is
-  ignored. Defends against vision sending the same candidate twice.
+- Idempotency: same `incident_id` (preferred) or `event_id` arriving twice
+  within DEDUP_WINDOW_SECONDS is ignored. Defends against vision sending the
+  same candidate twice under new event IDs.
 - Defensive tier coercion: accepts int, float, "3", "ALERT".
 """
 
@@ -32,9 +33,20 @@ log = logging.getLogger("action_router.router")
 
 TIER_LABELS = {1: "AMBIENT", 2: "NOTICE", 3: "ALERT", 4: "EMERGENCY"}
 TIER_NAME_TO_INT = {v: k for k, v in TIER_LABELS.items()}
+BEHAVIOR_PATTERN_MAX_TIER = {
+    "walking_through": 1,
+    "other_benign": 1,
+    "loitering": 2,
+    "leaving_item": 2,
+    "taking_item": 4,
+    "opening_container": 3,
+    "fleeing": 4,
+    "collapsed": 4,
+    "violence": 4,
+}
 
-DEDUP_WINDOW_SECONDS = 30.0
-_recent_event_ids: Dict[str, float] = {}
+DEDUP_WINDOW_SECONDS = 180.0
+_recent_event_keys: Dict[str, float] = {}
 _dedup_lock = threading.Lock()
 
 
@@ -71,17 +83,21 @@ class ActionResult:
 def execute_action(event_json: Dict[str, Any], config: Optional[Config] = None) -> ActionResult:
     cfg = config or CONFIG
     raw_tier = _coerce_tier(event_json.get("tier"))
-    tier, downgrade_note = _apply_confidence_floor(raw_tier, event_json, cfg)
+    tier, behavior_note = _apply_behavior_ceiling(raw_tier, event_json)
+    tier, downgrade_note = _apply_confidence_floor(tier, event_json, cfg)
     label = TIER_LABELS.get(tier, "UNKNOWN")
     result = ActionResult(tier=tier, tier_label=label)
+    if behavior_note:
+        result.actions.append(behavior_note)
     if downgrade_note:
         result.actions.append(downgrade_note)
     log.info(
-        "execute_action tier=%d (%s) raw_tier=%d event_id=%s pattern=%s conf=%.2f summary=%r",
+        "execute_action tier=%d (%s) raw_tier=%d event_id=%s incident_id=%s pattern=%s conf=%.2f summary=%r",
         tier,
         label,
         raw_tier,
         event_json.get("event_id"),
+        event_json.get("incident_id"),
         event_json.get("behavior_pattern", "?"),
         _safe_confidence(event_json.get("confidence")),
         event_json.get("one_line_summary"),
@@ -90,7 +106,11 @@ def execute_action(event_json: Dict[str, Any], config: Optional[Config] = None) 
     if _is_duplicate(event_json):
         result.duplicate = True
         result.actions.append("dedup_skip")
-        log.info("Skipping duplicate event_id=%s", event_json.get("event_id"))
+        log.info(
+            "Skipping duplicate event event_id=%s incident_id=%s",
+            event_json.get("event_id"),
+            event_json.get("incident_id"),
+        )
         return result
 
     # Mutate the event in place so downstream narration sees the corrected tier.
@@ -150,28 +170,58 @@ def _apply_confidence_floor(
     return new_tier, note
 
 
+def _apply_behavior_ceiling(
+    tier: int, event_json: Dict[str, Any]
+) -> tuple[int, Optional[str]]:
+    """Clamp only clearly non-call behaviors away from alert/emergency tiers."""
+    pattern = str(event_json.get("behavior_pattern") or "").strip().lower()
+    max_tier = BEHAVIOR_PATTERN_MAX_TIER.get(pattern)
+    if pattern not in {"walking_through", "other_benign", "loitering", "leaving_item"}:
+        return tier, None
+    if max_tier is None or tier <= max_tier:
+        return tier, None
+    note = f"downgrade_tier_{tier}_to_{max_tier}_for_behavior_{pattern}"
+    log.info(
+        "Behavior ceiling downgrading tier %d -> %d for pattern=%s",
+        tier,
+        max_tier,
+        pattern,
+    )
+    return max_tier, note
+
+
 def _is_duplicate(event_json: Dict[str, Any]) -> bool:
-    """True if the same event_id was seen within DEDUP_WINDOW_SECONDS."""
-    event_id = event_json.get("event_id")
-    if not event_id:
+    """True if the same incident/event key was seen within DEDUP_WINDOW_SECONDS."""
+    dedup_key = _dedup_key(event_json)
+    if not dedup_key:
         return False
     now = time.monotonic()
     with _dedup_lock:
-        last_seen = _recent_event_ids.get(event_id)
+        last_seen = _recent_event_keys.get(dedup_key)
         # Garbage-collect old entries opportunistically.
-        stale = [k for k, v in _recent_event_ids.items() if now - v > DEDUP_WINDOW_SECONDS]
+        stale = [k for k, v in _recent_event_keys.items() if now - v > DEDUP_WINDOW_SECONDS]
         for k in stale:
-            _recent_event_ids.pop(k, None)
-        _recent_event_ids[event_id] = now
+            _recent_event_keys.pop(k, None)
+        _recent_event_keys[dedup_key] = now
         if last_seen is None:
             return False
         return (now - last_seen) <= DEDUP_WINDOW_SECONDS
 
 
+def _dedup_key(event_json: Dict[str, Any]) -> str | None:
+    incident_id = str(event_json.get("incident_id") or "").strip()
+    if incident_id:
+        return f"incident:{incident_id}"
+    event_id = str(event_json.get("event_id") or "").strip()
+    if event_id:
+        return f"event:{event_id}"
+    return None
+
+
 def reset_dedup_cache() -> None:
     """Test-only helper: clear the in-memory dedup cache."""
     with _dedup_lock:
-        _recent_event_ids.clear()
+        _recent_event_keys.clear()
 
 
 # ---- tier handlers --------------------------------------------------------
@@ -272,7 +322,11 @@ def _try_synthesize(
 
 
 def _call(
-    to: str, script: str, media_url: Optional[str], cfg: Config, result: ActionResult
+    to: str,
+    script: str,
+    media_url: Optional[str],
+    cfg: Config,
+    result: ActionResult,
 ) -> Optional[CallResult]:
     try:
         call = _place_call_safe(to, script, media_url, cfg)
@@ -286,10 +340,18 @@ def _call(
 
 
 def _place_call_safe(
-    to: str, script: str, media_url: Optional[str], cfg: Config
+    to: str,
+    script: str,
+    media_url: Optional[str],
+    cfg: Config,
 ) -> Optional[CallResult]:
     if media_url:
-        return place_call_play(to, media_url, fallback_text=script, config=cfg)
+        return place_call_play(
+            to,
+            media_url,
+            fallback_text=script,
+            config=cfg,
+        )
     if script:
         return place_call_say(to, script, config=cfg)
     return None

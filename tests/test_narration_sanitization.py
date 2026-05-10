@@ -39,7 +39,8 @@ def test_static_template_uses_scene_from_event() -> None:
     )
     text = static_template(event)
     assert "library entrance" in text.lower()
-    assert "Press 1" in text
+    assert "ThirdEye is watching." in text
+    assert "Press 1" not in text
 
 
 def test_static_template_falls_back_to_default_scene() -> None:
@@ -48,7 +49,8 @@ def test_static_template_falls_back_to_default_scene() -> None:
     event.pop("scene", None)
     text = static_template(event)
     assert "the camera view" in text.lower()
-    assert "Press 1" in text
+    assert "ThirdEye is watching." in text
+    assert "Press 1" not in text
 
 
 def test_static_template_clamps_long_text() -> None:
@@ -68,7 +70,8 @@ def test_generate_script_uses_sanitized_static_when_claude_disabled(dry_config) 
     )
     script = generate_script(event, config=dry_config)
     assert "office hallway" in script.lower()
-    assert "Press 1" in script
+    assert "ThirdEye is watching." in script
+    assert "Press 1" not in script
 
 
 def test_generate_script_returns_empty_for_tier1(dry_config) -> None:
@@ -151,5 +154,16 @@ def test_static_template_speaks_descriptive_features(dry_config) -> None:
     )
     text = static_template(event)
     assert "red hoodie" in text
-    assert "Press 1" in text
+    assert "Press 1" not in text
     assert "0." not in text  # no leaked confidence numbers
+
+
+def test_static_template_drops_trailing_lower_body_guess() -> None:
+    event = sample_event(
+        tier=3,
+        description="short-haired person in a gray shirt and jeans",
+        summary="person took an item from the table",
+    )
+    text = static_template(event)
+    assert "gray shirt" in text
+    assert "jeans" not in text

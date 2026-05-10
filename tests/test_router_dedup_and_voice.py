@@ -32,13 +32,27 @@ def test_router_deduplicates_same_event_id_within_window(dry_config) -> None:
     assert not second.calls
 
 
-def test_router_does_not_dedup_when_event_id_missing(dry_config) -> None:
+def test_router_does_not_dedup_when_event_and_incident_ids_missing(dry_config) -> None:
     event = sample_event(tier=3)
     event.pop("event_id")
+    event.pop("incident_id")
     first = execute_action(event, config=dry_config)
     second = execute_action(event, config=dry_config)
     assert not first.duplicate
     assert not second.duplicate
+
+
+def test_router_deduplicates_same_incident_id_even_with_new_event_ids(dry_config) -> None:
+    first_event = sample_event(tier=3)
+    second_event = sample_event(tier=3)
+    second_event["incident_id"] = first_event["incident_id"]
+
+    first = execute_action(first_event, config=dry_config)
+    second = execute_action(second_event, config=dry_config)
+
+    assert not first.duplicate
+    assert second.duplicate
+    assert second.actions == ["dedup_skip"]
 
 
 def test_router_coerces_string_tier_label(dry_config) -> None:
@@ -60,7 +74,7 @@ def test_router_clamps_out_of_range_tier(dry_config) -> None:
     event = sample_event(tier=4)
     event["tier"] = 99
     result = execute_action(event, config=dry_config)
-    assert result.tier == 4  # clamped, not rejected
+    assert result.tier == 4
 
 
 def test_voice_validate_to_rejects_garbage() -> None:
@@ -83,7 +97,7 @@ def test_voice_clamp_say_collapses_whitespace() -> None:
 
 
 def test_voice_clamp_say_returns_default_on_empty() -> None:
-    assert _clamp_say("") == "SafeWatch alert."
+    assert _clamp_say("") == "ThirdEye alert."
 
 
 def test_place_call_say_dry_run_validates_to(dry_config) -> None:

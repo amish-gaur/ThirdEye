@@ -32,10 +32,20 @@ def test_tier3_calls_homeowner(dry_config) -> None:
     assert call.dry_run is True
     assert call.to == dry_config.homeowner_phone
     assert "<Say" in call.twiml  # ElevenLabs disabled -> Say path
-    assert "Press 1" in call.twiml
+    assert "<Gather" not in call.twiml
+    assert "ThirdEye is watching." in call.twiml
 
 
-def test_tier4_parallel_cascade(dry_config) -> None:
+def test_loitering_cannot_trigger_a_call_even_if_posted_as_tier3(dry_config) -> None:
+    event = sample_event(tier=3, behavior_pattern="loitering")
+    result = execute_action(event, config=dry_config)
+
+    assert result.tier == 2
+    assert "call_homeowner" not in result.actions
+    assert "sms_homeowner" in result.actions
+
+
+def test_collapsed_can_still_escalate_to_emergency(dry_config) -> None:
     result = execute_action(sample_event(tier=4), config=dry_config)
     assert result.tier == 4
     targets = {c.to for c in result.calls}
@@ -47,11 +57,22 @@ def test_tier4_parallel_cascade(dry_config) -> None:
     assert {"call_homeowner", "call_dispatch", "call_family"} <= set(result.actions)
 
 
+def test_tier3_call_path_does_not_depend_on_public_base_url(dry_config) -> None:
+    cfg = dry_config
+    object.__setattr__(cfg, "public_base_url", "http://127.0.0.1:8001")
+
+    result = execute_action(sample_event(tier=3), config=cfg)
+
+    assert len(result.calls) == 1
+    assert "<Gather" not in result.calls[0].twiml
+    assert "<Say" in result.calls[0].twiml
+
+
 def test_unknown_tier_clamped_to_one(dry_config) -> None:
     event = sample_event(tier=1)
     event["tier"] = 99
     result = execute_action(event, config=dry_config)
-    assert result.tier == 4  # 99 clamped down to 4 (max)
+    assert result.tier == 1
 
 
 def test_missing_tier_defaults_to_one(dry_config) -> None:
@@ -78,6 +99,7 @@ def test_tier3_with_elevenlabs_uses_play(dry_config, mocker, tmp_path) -> None:
     assert result.media_url and result.media_url.endswith("alert_x.mp3")
     assert len(result.calls) == 1
     twiml = result.calls[0].twiml
+    assert "<Gather" not in twiml
     assert "<Play>" in twiml
     assert "alert_x.mp3" in twiml
 

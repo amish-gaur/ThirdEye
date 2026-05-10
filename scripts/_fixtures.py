@@ -46,6 +46,7 @@ def sample_event(
     pattern = behavior_pattern or DEFAULT_BEHAVIOR_PATTERNS.get(tier, "other_benign")
     return {
         "event_id": f"evt_{uuid.uuid4().hex[:12]}",
+        "incident_id": f"inc_{uuid.uuid4().hex[:12]}",
         "node_id": "node_local",
         "tier": tier,
         "tier_name": TIER_LABELS.get(tier, "UNKNOWN"),
