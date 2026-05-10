@@ -176,7 +176,13 @@ setInterval(tick, 800);
 
 
 def render_camera_page(*, token: str, ws_url: str, label_default: str) -> str:
-    """Phone capture page: getUserMedia + WebSocket frame upload."""
+    """Phone capture page: getUserMedia + WebSocket frame upload.
+
+    Re-skinned to match the Third Eye Figma Make design system —
+    cream/ink palette, thick black borders, offset block shadows,
+    Playfair Display + DM Mono. JS behaviour and every element ID
+    are preserved exactly so the existing handlers keep working.
+    """
     token_safe = _esc(token)
     ws_url_safe = _esc(ws_url)
     label_safe = _esc(label_default)
@@ -185,38 +191,191 @@ def render_camera_page(*, token: str, ws_url: str, label_default: str) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>SafeWatch Third Eye</title>
+<meta name="theme-color" content="#f4ead8">
+<title>Third Eye · phone camera</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Playfair+Display:ital,wght@0,700;0,900;1,700;1,900&family=Inter:wght@500;600;700&display=swap" rel="stylesheet">
 <style>
+:root {{
+  --cream: #f4ead8;
+  --ink: #1a0306;
+  --red: #c8222d;
+  --orange: #e85a3c;
+  --gold: #f4c97a;
+  --wine: #7a2230;
+  --deep: #3a1014;
+  --sand: #e6d2a8;
+}}
 * {{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }}
-html, body {{ margin: 0; padding: 0; height: 100vh; background: #000; color: #fff; font: 15px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro", system-ui, sans-serif; overscroll-behavior: none; }}
-.shell {{ position: fixed; inset: 0; display: flex; flex-direction: column; }}
-video {{ flex: 1 1 auto; min-height: 0; width: 100%; object-fit: cover; background: #000; }}
-.controls {{ padding: 18px max(16px, env(safe-area-inset-right)) max(18px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); background: linear-gradient(0deg, rgba(0,0,0,0.92), rgba(0,0,0,0)); display: grid; gap: 10px; }}
+html, body {{ margin: 0; padding: 0; height: 100dvh; height: 100vh; background: var(--cream); color: var(--ink); font: 15px/1.4 "Inter", -apple-system, BlinkMacSystemFont, system-ui, sans-serif; overscroll-behavior: none; }}
+body::before, body::after {{ content: ""; position: fixed; pointer-events: none; z-index: 0; border-radius: 50%; border: 4px solid var(--ink); }}
+body::before {{ width: 280px; height: 280px; top: -120px; right: -90px; background: var(--gold); }}
+body::after {{ width: 360px; height: 360px; bottom: -180px; left: -140px; background: var(--orange); opacity: .55; }}
+
+.shell {{ position: fixed; inset: 0; display: flex; flex-direction: column; z-index: 1; }}
+video {{ flex: 1 1 auto; min-height: 0; width: 100%; object-fit: cover; background: var(--ink); display: block; }}
+
+/* ---------- Top wordmark strip (visible whenever the camera area is showing) ---------- */
+.brand-strip {{
+  position: absolute; top: max(14px, env(safe-area-inset-top)); left: 16px; right: 16px;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  z-index: 4; pointer-events: none;
+}}
+.brand {{
+  background: var(--cream); color: var(--ink);
+  border: 3px solid var(--ink); border-radius: 999px;
+  padding: 8px 14px; box-shadow: 0 4px 0 var(--ink);
+  font-family: "Playfair Display", serif; font-weight: 900; font-size: 18px; line-height: 1;
+  letter-spacing: -0.01em;
+}}
+.brand i {{ color: var(--red); font-style: italic; font-weight: 900; }}
+.token-pill {{
+  background: var(--gold); color: var(--ink);
+  border: 3px solid var(--ink); border-radius: 999px;
+  padding: 6px 12px; box-shadow: 0 4px 0 var(--ink);
+  font-family: "DM Mono", ui-monospace, monospace; font-size: 10px; letter-spacing: 0.25em;
+  text-transform: uppercase;
+}}
+
+/* ---------- Bottom controls card ---------- */
+.controls {{
+  position: relative; z-index: 3;
+  margin: 0 12px max(14px, env(safe-area-inset-bottom));
+  background: var(--cream);
+  border: 4px solid var(--ink); border-radius: 18px;
+  box-shadow: 0 6px 0 var(--ink);
+  padding: 14px 16px 16px;
+  display: grid; gap: 12px;
+}}
 .row {{ display: flex; align-items: center; gap: 12px; }}
-.dot {{ width: 12px; height: 12px; border-radius: 50%; background: #f0b35b; transition: background .2s; }}
-.dot.live {{ background: #5cf2c4; box-shadow: 0 0 0 4px rgba(92,242,196,.18); animation: pulse 1.6s ease-in-out infinite; }}
-@keyframes pulse {{ 0% {{ box-shadow: 0 0 0 0 rgba(92,242,196,.45); }} 70% {{ box-shadow: 0 0 0 8px rgba(92,242,196,0); }} 100% {{ box-shadow: 0 0 0 0 rgba(92,242,196,0); }} }}
-button {{ background: #5cf2c4; color: #0b0d12; border: 0; border-radius: 10px; padding: 12px 16px; font-weight: 700; font-size: 16px; cursor: pointer; }}
-button.ghost {{ background: rgba(255,255,255,.08); color: #fff; }}
-.input-row {{ display: flex; gap: 8px; }}
-.input-row input {{ flex: 1; min-width: 0; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.12); color: #fff; padding: 10px 12px; border-radius: 10px; font-size: 15px; }}
-.meta {{ font-size: 12px; color: rgba(255,255,255,.65); display: flex; flex-wrap: wrap; gap: 12px; }}
-.banner {{ position: absolute; top: 0; left: 0; right: 0; padding: 12px 16px; background: rgba(255,80,80,.92); color: #fff; font-size: 14px; display: none; }}
-.idle {{ position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; }}
-.idle h2 {{ font-size: 22px; margin: 0 0 6px; }}
-.idle p {{ color: rgba(255,255,255,.7); margin: 0 0 22px; max-width: 360px; }}
+.dot {{
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--gold); border: 3px solid var(--ink);
+  flex: 0 0 14px; transition: background .2s;
+}}
+.dot.live {{ background: var(--red); animation: pulse 1.4s ease-in-out infinite; }}
+@keyframes pulse {{ 0%, 100% {{ transform: scale(1); }} 50% {{ transform: scale(1.25); }} }}
+#title {{
+  font-family: "DM Mono", ui-monospace, monospace;
+  font-size: 12px; letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--ink); font-weight: 500;
+}}
+.meta {{
+  font-family: "DM Mono", ui-monospace, monospace;
+  font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--deep);
+  display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px;
+}}
+.meta b {{ color: var(--ink); font-weight: 500; }}
+
+.input-row {{ display: flex; gap: 8px; align-items: stretch; }}
+.input-row input {{
+  flex: 1; min-width: 0;
+  background: var(--cream); color: var(--ink);
+  border: 3px solid var(--ink); border-radius: 10px;
+  padding: 10px 12px; font: 14px/1.3 "Inter", system-ui, sans-serif;
+  box-shadow: 0 3px 0 var(--ink);
+}}
+.input-row input::placeholder {{ color: var(--deep); opacity: .55; }}
+
+button {{
+  font-family: "DM Mono", ui-monospace, monospace;
+  font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase;
+  background: var(--red); color: var(--cream);
+  border: 3px solid var(--ink); border-radius: 999px;
+  padding: 12px 18px; font-weight: 600;
+  cursor: pointer; box-shadow: 0 4px 0 var(--ink);
+  transition: transform .08s ease, box-shadow .08s ease;
+}}
+button:active {{ transform: translateY(2px); box-shadow: 0 2px 0 var(--ink); }}
+button.ghost {{ background: var(--cream); color: var(--ink); }}
+
+.banner {{
+  position: absolute; top: max(14px, env(safe-area-inset-top)); left: 16px; right: 16px;
+  z-index: 5;
+  background: var(--red); color: var(--cream);
+  border: 4px solid var(--ink); border-radius: 14px;
+  box-shadow: 0 5px 0 var(--ink);
+  padding: 12px 14px;
+  font-family: "DM Mono", ui-monospace, monospace;
+  font-size: 12px; letter-spacing: 0.08em;
+  display: none;
+}}
+
+/* ---------- Idle / hero (covers the camera before it starts) ---------- */
+.idle {{
+  position: absolute; inset: 0; z-index: 2;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 32px 22px; text-align: center; gap: 18px;
+  background: var(--cream);
+}}
+.idle .eyebrow {{
+  font-family: "DM Mono", ui-monospace, monospace;
+  font-size: 10px; letter-spacing: 0.4em; text-transform: uppercase;
+  color: var(--deep); display: flex; align-items: center; gap: 8px;
+}}
+.idle .eyebrow .pip {{ width: 8px; height: 8px; border-radius: 50%; background: var(--red); border: 2px solid var(--ink); display: inline-block; }}
+.idle h1 {{
+  font-family: "Playfair Display", serif; font-weight: 900;
+  font-size: 44px; line-height: 1.02; letter-spacing: -0.01em;
+  color: var(--ink); margin: 0;
+}}
+.idle h1 i {{ color: var(--red); font-style: italic; font-weight: 900; }}
+.idle p {{
+  color: var(--deep); margin: 0; max-width: 320px;
+  font-size: 14px; line-height: 1.6;
+}}
+.cta {{ margin-top: 6px; font-size: 14px; padding: 16px 26px; }}
+.idle .token-line {{
+  font-family: "DM Mono", ui-monospace, monospace;
+  font-size: 10px; letter-spacing: 0.3em; text-transform: uppercase;
+  color: var(--wine);
+}}
+.idle .token-line b {{ color: var(--ink); }}
+
+/* Stat tile row in idle */
+.tier-row {{
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px;
+  width: 100%; max-width: 360px; margin-top: 4px;
+}}
+.tier {{
+  border: 3px solid var(--ink); border-radius: 8px;
+  padding: 6px 4px; box-shadow: 0 3px 0 var(--ink);
+  font-family: "DM Mono", ui-monospace, monospace;
+  font-size: 8px; letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--ink); text-align: center;
+}}
+.tier.t-amb {{ background: #cfc4a6; }}
+.tier.t-not {{ background: var(--gold); }}
+.tier.t-alr {{ background: var(--orange); color: var(--cream); }}
+.tier.t-emr {{ background: var(--red); color: var(--cream); }}
+
+/* When streaming, hide the brand strip's pointer-events so taps pass through */
+.streaming .idle {{ display: none; }}
 </style>
 </head>
 <body>
-<div class="shell">
+<div class="shell" id="shell">
   <div class="banner" id="banner"></div>
+
+  <div class="brand-strip">
+    <div class="brand">Third <i>Eye</i></div>
+    <div class="token-pill">node · {token_safe}</div>
+  </div>
+
   <video id="video" playsinline autoplay muted></video>
+
   <div class="controls">
     <div class="row">
       <div class="dot" id="dot"></div>
-      <div style="flex:1;">
-        <div id="title" style="font-weight:600;">Tap start to share this camera</div>
-        <div class="meta"><span id="metaState">idle</span><span id="metaToken">token <b>{token_safe}</b></span><span id="metaFps">0 fps</span></div>
+      <div style="flex:1; min-width: 0;">
+        <div id="title">Tap start to share this camera</div>
+        <div class="meta">
+          <span id="metaState">idle</span>
+          <span id="metaToken">token <b>{token_safe}</b></span>
+          <span id="metaFps">0 fps</span>
+        </div>
       </div>
     </div>
     <div class="input-row">
@@ -225,11 +384,19 @@ button.ghost {{ background: rgba(255,255,255,.08); color: #fff; }}
       <button id="flipBtn" class="ghost">Flip</button>
     </div>
   </div>
+
   <div class="idle" id="idle">
-    <div>
-      <h2>Third Eye on your phone</h2>
-      <p>Tap <b>Start</b>, allow camera access, and prop your phone where you want SafeWatch to watch. The desktop pairing screen will turn green the moment frames arrive.</p>
+    <div class="eyebrow"><span class="pip"></span> Phone · Third Eye sensor</div>
+    <h1>Become a<br>Third <i>Eye</i>.</h1>
+    <p>Tap below, allow camera access, and prop your phone where you want SafeWatch to watch. The desktop pairing screen turns green the moment frames arrive.</p>
+    <button class="cta" id="heroStartBtn">Start camera</button>
+    <div class="tier-row">
+      <div class="tier t-amb">Ambient</div>
+      <div class="tier t-not">Notice</div>
+      <div class="tier t-alr">Alert</div>
+      <div class="tier t-emr">Emerg</div>
     </div>
+    <div class="token-line">token <b>{token_safe}</b> · frames stay on-device</div>
   </div>
 </div>
 
@@ -245,9 +412,11 @@ const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 const startBtn = document.getElementById("startBtn");
+const heroStartBtn = document.getElementById("heroStartBtn");
 const flipBtn = document.getElementById("flipBtn");
 const dot = document.getElementById("dot");
 const banner = document.getElementById("banner");
+const shell = document.getElementById("shell");
 const idleScreen = document.getElementById("idle");
 const labelInput = document.getElementById("labelInput");
 const metaState = document.getElementById("metaState");
@@ -269,6 +438,10 @@ function showError(msg) {{
 }}
 
 async function start() {{
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {{
+    showError("This browser can't access the camera. Open the page in Safari or Chrome over HTTPS.");
+    return;
+  }}
   try {{
     stream = await navigator.mediaDevices.getUserMedia({{
       video: {{ facingMode: {{ ideal: facing }}, width: {{ ideal: 1280 }}, height: {{ ideal: 720 }} }},
@@ -280,11 +453,14 @@ async function start() {{
   }}
   video.srcObject = stream;
   await video.play();
+  shell.classList.add("streaming");
   idleScreen.style.display = "none";
   startBtn.textContent = "Stop";
   startBtn.onclick = stop;
   metaState.textContent = "connecting";
   titleEl.textContent = "Connecting to SafeWatch\u2026";
+  banner.style.display = "none";
+  lockWake();
   connect();
   loop();
 }}
@@ -297,8 +473,9 @@ function stop() {{
   startBtn.onclick = start;
   dot.className = "dot";
   metaState.textContent = "idle";
-  titleEl.textContent = "Stopped";
-  idleScreen.style.display = "grid";
+  titleEl.textContent = "Tap start to share this camera";
+  shell.classList.remove("streaming");
+  idleScreen.style.display = "";
 }}
 
 function connect() {{
@@ -376,8 +553,12 @@ function loop() {{
 }}
 
 startBtn.onclick = start;
+if (heroStartBtn) heroStartBtn.addEventListener("click", start);
 
-// Keep the screen awake while streaming (best-effort, modern browsers).
+if (location.protocol !== "https:" && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") {{
+  showError("Camera requires HTTPS. Open this page over the public ngrok URL, not the LAN IP.");
+}}
+
 let wake = null;
 async function lockWake() {{
   try {{ if ("wakeLock" in navigator) wake = await navigator.wakeLock.request("screen"); }} catch (e) {{}}
@@ -385,7 +566,6 @@ async function lockWake() {{
 document.addEventListener("visibilitychange", () => {{
   if (document.visibilityState === "visible" && !wake) lockWake();
 }});
-lockWake();
 </script>
 </body>
 </html>"""
