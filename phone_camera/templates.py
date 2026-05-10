@@ -225,11 +225,13 @@ video {{ flex: 1 1 auto; min-height: 0; width: 100%; object-fit: cover; backgrou
 .brand {{
   background: var(--cream); color: var(--ink);
   border: 3px solid var(--ink); border-radius: 999px;
-  padding: 8px 14px; box-shadow: 0 4px 0 var(--ink);
+  padding: 6px 14px 6px 8px; box-shadow: 0 4px 0 var(--ink);
   font-family: "Playfair Display", serif; font-weight: 900; font-size: 18px; line-height: 1;
   letter-spacing: -0.01em;
+  display: inline-flex; align-items: center; gap: 8px;
 }}
 .brand i {{ color: var(--red); font-style: italic; font-weight: 900; }}
+.brand svg {{ display: block; width: 22px; height: 22px; flex-shrink: 0; }}
 .token-pill {{
   background: var(--gold); color: var(--ink);
   border: 3px solid var(--ink); border-radius: 999px;
@@ -360,7 +362,19 @@ button.ghost {{ background: var(--cream); color: var(--ink); }}
   <div class="banner" id="banner"></div>
 
   <div class="brand-strip">
-    <div class="brand">Third <i>Eye</i></div>
+    <div class="brand">
+      <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" fill="currentColor" role="img" aria-label="Third Eye">
+        <rect x="32" y="3" width="6" height="22" rx="2.8" transform="rotate(8 35 14)"/>
+        <rect x="40" y="6" width="5.6" height="19" rx="2.6" transform="rotate(8 42.8 15.5)"/>
+        <rect x="47" y="10" width="5" height="15" rx="2.4" transform="rotate(8 49.5 17.5)"/>
+        <path d="M28 24 H54 a4 4 0 0 1 4 4 V54 a4 4 0 0 1 -4 4 H32 a4 4 0 0 1 -4 -4 Z"/>
+        <path d="M19 22 A14 14 0 1 1 19 50 A14 14 0 1 1 19 22 Z M19 28 A8 8 0 1 0 19 44 A8 8 0 1 0 19 28 Z" fill-rule="evenodd"/>
+        <ellipse cx="19" cy="36" rx="6.5" ry="3.4"/>
+        <ellipse cx="19" cy="36" rx="5" ry="2.1" fill="var(--cream)"/>
+        <circle cx="19" cy="36" r="1.7"/>
+      </svg>
+      <span>Third <i>Eye</i></span>
+    </div>
     <div class="token-pill">node · {token_safe}</div>
   </div>
 

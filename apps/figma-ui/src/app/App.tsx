@@ -19,6 +19,7 @@ import { AmbientBg } from "./components/AmbientBg";
 import { CornerCamera } from "./components/CornerCamera";
 import { WaterTower } from "./components/WaterTower";
 import { CameraTile } from "./components/CameraTile";
+import { ThirdEyeLogo } from "./components/ThirdEyeLogo";
 import {
   BACKEND_URL,
   fetchCameras,
@@ -260,6 +261,7 @@ function TopBar({ tab, setTab }: { tab: string; setTab: (s: string) => void }) {
   return (
     <header className="flex items-center justify-between gap-4">
       <div className="flex items-center gap-3">
+        <ThirdEyeLogo size={42} bg={C.cream} style={{ color: C.ink, flexShrink: 0 }} />
         <div>
           <div
             style={{
