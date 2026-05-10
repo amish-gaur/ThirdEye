@@ -31,6 +31,23 @@ import pytest  # noqa: E402
 from action_router.config import Config  # noqa: E402
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "integration: requires LAN multicast / live ports; opt-in via -m integration",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip integration tests by default; enable via `-m integration`."""
+    if config.getoption("-m") and "integration" in config.getoption("-m"):
+        return
+    skip_integration = pytest.mark.skip(reason="integration: opt-in via -m integration")
+    for item in items:
+        if "integration" in item.keywords:
+            item.add_marker(skip_integration)
+
+
 @pytest.fixture
 def dry_config(tmp_path: Path) -> Config:
     """Per-test Config: fully dry, isolated media dir."""

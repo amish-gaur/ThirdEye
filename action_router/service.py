@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from phone_camera import create_phone_camera_router
 
 from .config import CONFIG
+from .discovery_routes import create_discovery_router
 from .router import execute_action
 from .twiml import say_response
 
@@ -33,6 +34,9 @@ def create_app() -> FastAPI:
             public_base_url_provider=lambda: CONFIG.public_base_url
         )
     )
+
+    # LAN camera discovery (mDNS) + camera-subprocess registry.
+    app.include_router(create_discovery_router())
 
     @app.get("/", include_in_schema=False)
     def root() -> RedirectResponse:
