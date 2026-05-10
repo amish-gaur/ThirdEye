@@ -226,12 +226,18 @@ def cmd_enroll(args) -> int:
 
             kept_this_frame = False
             status = "looking..."
+            primary = None
             if len(faces) == 0:
                 status = "no face"
-            elif len(faces) > 1:
-                status = f"{len(faces)} faces — only one person at a time"
             else:
-                face = faces[0]
+                # Closest face = largest bbox area = the subject. Don't refuse
+                # enrollment over background people / posters / reflections.
+                def _area(f):
+                    x1, y1, x2, y2 = f.bbox
+                    return max(0.0, x2 - x1) * max(0.0, y2 - y1)
+                primary = max(faces, key=_area)
+            if primary is not None:
+                face = primary
                 if face.det_score < MIN_DET_SCORE:
                     status = f"low quality ({face.det_score:.2f})"
                 elif face_too_small(face):
@@ -257,10 +263,13 @@ def cmd_enroll(args) -> int:
                                 MAX_GALLERY_SIZE,
                             )
                             break
+                    extra = (
+                        f"  (+{len(faces) - 1} ignored)" if len(faces) > 1 else ""
+                    )
                     status = (
-                        f"captured ({len(new_entries)}/{MAX_GALLERY_SIZE})"
+                        f"captured ({len(new_entries)}/{MAX_GALLERY_SIZE}){extra}"
                         if kept_this_frame
-                        else "duplicate pose — turn your head"
+                        else f"duplicate pose — turn your head{extra}"
                     )
 
             # Overlay
@@ -287,7 +296,7 @@ def cmd_enroll(args) -> int:
             )
             for f in faces:
                 x1, y1, x2, y2 = f.bbox.astype(int)
-                colour = (0, 200, 0) if kept_this_frame and f is faces[0] else (180, 180, 180)
+                colour = (0, 200, 0) if kept_this_frame and f is primary else (180, 180, 180)
                 cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
 
             cv2.imshow("face_id_demo: enroll", frame)
