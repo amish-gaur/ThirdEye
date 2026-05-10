@@ -364,14 +364,14 @@ button.ghost {{ background: var(--cream); color: var(--ink); }}
   <div class="brand-strip">
     <div class="brand">
       <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" fill="currentColor" role="img" aria-label="Third Eye">
-        <rect x="32" y="3" width="6" height="22" rx="2.8" transform="rotate(8 35 14)"/>
-        <rect x="40" y="6" width="5.6" height="19" rx="2.6" transform="rotate(8 42.8 15.5)"/>
-        <rect x="47" y="10" width="5" height="15" rx="2.4" transform="rotate(8 49.5 17.5)"/>
-        <path d="M28 24 H54 a4 4 0 0 1 4 4 V54 a4 4 0 0 1 -4 4 H32 a4 4 0 0 1 -4 -4 Z"/>
-        <path d="M19 22 A14 14 0 1 1 19 50 A14 14 0 1 1 19 22 Z M19 28 A8 8 0 1 0 19 44 A8 8 0 1 0 19 28 Z" fill-rule="evenodd"/>
-        <ellipse cx="19" cy="36" rx="6.5" ry="3.4"/>
-        <ellipse cx="19" cy="36" rx="5" ry="2.1" fill="var(--cream)"/>
-        <circle cx="19" cy="36" r="1.7"/>
+        <path d="M20 10 A16 16 0 1 1 20 54 A16 16 0 1 1 20 10 Z M20 17 A9 9 0 1 0 20 47 A9 9 0 1 0 20 17 Z" fill-rule="evenodd"/>
+        <rect x="27" y="28" width="33" height="30" rx="4.5" ry="4.5"/>
+        <rect x="29.5" y="9" width="7.5" height="19" rx="3.6"/>
+        <rect x="39" y="13" width="7" height="15" rx="3.4"/>
+        <rect x="48" y="17" width="6.5" height="11" rx="3.2"/>
+        <ellipse cx="20" cy="32" rx="7.2" ry="3.7"/>
+        <ellipse cx="20" cy="32" rx="5.4" ry="2.3" fill="var(--cream)"/>
+        <circle cx="20" cy="32" r="2.1"/>
       </svg>
       <span>Third <i>Eye</i></span>
     </div>
