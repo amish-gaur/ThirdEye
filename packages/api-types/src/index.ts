@@ -22,7 +22,15 @@ export interface EventRecord {
   suspect_description?: string;
   one_line_summary: string;
   timestamp: string;
+  /** Server-rendered absolute URL to the suspect frame (preferred). */
   clip_url?: string;
+  /**
+   * Disk path emitted by the action router for theft incidents
+   * (`/.../media/frames/inc_<id>_<unix_ts>.jpg`). The web client takes
+   * the basename and joins it with `NEXT_PUBLIC_PUBLIC_BASE_URL` to
+   * fetch from `/media/frames/<basename>`.
+   */
+  clip_path?: string;
   thumb_url?: string;
   yolo_classes: string[];
   actions_taken: string[];

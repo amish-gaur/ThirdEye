@@ -7,6 +7,37 @@
 export const BACKEND_URL =
   (import.meta as any).env?.VITE_BACKEND_URL ?? "http://127.0.0.1:8001";
 
+/**
+ * Public base URL the action router exposes static assets at
+ * (`${PUBLIC_BASE_URL}/media/frames/<basename>.jpg`).
+ *
+ * Override with `VITE_PUBLIC_BASE_URL=https://<your-ngrok>.ngrok-free.app`.
+ * Defaults to BACKEND_URL so local dev (everything on :8001) works without
+ * extra config. Free-tier ngrok URLs reroll on restart - never hard-code.
+ */
+export const PUBLIC_BASE_URL: string =
+  (import.meta as any).env?.VITE_PUBLIC_BASE_URL ?? BACKEND_URL;
+
+/**
+ * Resolve the suspect-frame URL for an incident event.
+ *
+ * Prefers a server-rendered `clip_url`. Falls back to deriving one from the
+ * action router's disk path: `/.../media/frames/inc_<id>_<unix_ts>.jpg`
+ *   -> `${PUBLIC_BASE_URL}/media/frames/inc_<id>_<unix_ts>.jpg`
+ *
+ * Returns `null` for events that have no frame (tier 1/2 don't get one).
+ */
+export function suspectFrameUrl(
+  ev: Pick<IncidentEvent, "clip_url" | "clip_path"> | undefined | null
+): string | null {
+  if (!ev) return null;
+  if (ev.clip_url) return ev.clip_url;
+  if (!ev.clip_path) return null;
+  const basename = ev.clip_path.split("/").pop();
+  if (!basename) return null;
+  return `${PUBLIC_BASE_URL.replace(/\/$/, "")}/media/frames/${basename}`;
+}
+
 export type Tier = "ambient" | "notice" | "alert" | "emergency";
 
 export type IncidentEvent = {
@@ -20,6 +51,15 @@ export type IncidentEvent = {
   scene?: string;
   timestamp?: number;
   behavior_pattern?: string;
+  /** Server-rendered absolute URL for the suspect frame (preferred). */
+  clip_url?: string;
+  /**
+   * Disk path the action router writes for tier-3/4 incidents
+   * (`/.../media/frames/inc_<id>_<unix_ts>.jpg`). The client takes
+   * the basename and joins it with PUBLIC_BASE_URL to fetch from
+   * `/media/frames/<basename>`.
+   */
+  clip_path?: string;
 };
 
 export type StreamMessage = {

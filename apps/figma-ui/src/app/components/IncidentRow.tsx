@@ -14,12 +14,19 @@ export function IncidentRow({
   title,
   node,
   time,
+  imgUrl,
   delay = 0,
 }: {
   tier: Tier;
   title: string;
   node: string;
   time: string;
+  /**
+   * Optional suspect-frame URL. Tier 3/4 incidents have one
+   * (action router writes the JPEG when THEFT_CONFIRMED fires);
+   * tier 1/2 don't, so the slot collapses gracefully.
+   */
+  imgUrl?: string | null;
   delay?: number;
 }) {
   const t = TIER[tier];
@@ -33,7 +40,7 @@ export function IncidentRow({
       style={{ borderBottom: "3px solid #1a0306" }}
     >
       <div
-        className="w-10 h-10 rounded-full flex items-center justify-center"
+        className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0"
         style={{
           background: t.bg,
           border: "3px solid #1a0306",
@@ -50,6 +57,22 @@ export function IncidentRow({
           transition={{ duration: 1.4, repeat: Infinity }}
         />
       </div>
+      {imgUrl ? (
+        <img
+          src={imgUrl}
+          alt={title}
+          loading="lazy"
+          className="w-16 h-12 object-cover flex-shrink-0"
+          style={{
+            border: "3px solid #1a0306",
+            borderRadius: 6,
+            boxShadow: "0 3px 0 #1a0306",
+          }}
+          onError={(e) => {
+            (e.currentTarget as HTMLImageElement).style.display = "none";
+          }}
+        />
+      ) : null}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-3 mb-1">
           <span
@@ -75,7 +98,7 @@ export function IncidentRow({
         </div>
       </div>
       <div
-        className="text-[12px] text-[#1a0306] tabular-nums"
+        className="text-[12px] text-[#1a0306] tabular-nums flex-shrink-0"
         style={{ fontFamily: "DM Mono, monospace" }}
       >
         {time}

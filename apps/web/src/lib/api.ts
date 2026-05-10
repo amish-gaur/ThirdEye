@@ -8,6 +8,39 @@ import type {
 
 const base = "/api";
 
+/**
+ * Public base URL for action-router static assets (the JPEG suspect
+ * frames live at `${PUBLIC_BASE_URL}/media/frames/<basename>`).
+ *
+ * Configure via `NEXT_PUBLIC_PUBLIC_BASE_URL` in `.env.local`. ngrok
+ * URLs reroll on free-tier restarts, so never hard-code one.
+ */
+export const PUBLIC_BASE_URL: string =
+  (typeof process !== "undefined" &&
+    process.env.NEXT_PUBLIC_PUBLIC_BASE_URL) ||
+  "";
+
+/**
+ * Resolve the suspect-frame URL for an event.
+ *
+ * Prefers a server-rendered `clip_url`. Falls back to deriving one from
+ * the disk path the action router writes for tier 3/4 incidents:
+ *   `/.../media/frames/inc_<id>_<unix_ts>.jpg`
+ *   -> `${PUBLIC_BASE_URL}/media/frames/inc_<id>_<unix_ts>.jpg`
+ *
+ * Returns `null` for events that have no frame (tier 1/2 don't get one).
+ */
+export function suspectFrameUrl(
+  ev: Pick<EventRecord, "clip_url" | "clip_path">
+): string | null {
+  if (ev.clip_url) return ev.clip_url;
+  if (!ev.clip_path) return null;
+  const basename = ev.clip_path.split("/").pop();
+  if (!basename) return null;
+  if (!PUBLIC_BASE_URL) return null;
+  return `${PUBLIC_BASE_URL.replace(/\/$/, "")}/media/frames/${basename}`;
+}
+
 export async function getEvents(tier?: number): Promise<EventRecord[]> {
   const url = new URL(`${base}/events`, window.location.origin);
   if (tier) url.searchParams.set("tier", String(tier));

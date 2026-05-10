@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { SeverityBadge } from "@safewatch/ui/web";
-import { getEvents } from "@/lib/api";
+import { getEvents, suspectFrameUrl } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { EventRecord } from "@safewatch/api-types";
 
@@ -60,29 +60,45 @@ export default function TimelinePage() {
             {day}
           </div>
           <div className="grid gap-2">
-            {items.map((e) => (
-              <Link
-                key={e.id}
-                href={`/timeline/${e.id}`}
-                className="card-glass ring-glow grid grid-cols-[80px_1fr_auto] items-center gap-4 rounded-xl px-4 py-3 transition-transform hover:-translate-y-px"
-              >
-                <span className="font-mono text-[12px] text-cream-50/55">
-                  {new Date(e.timestamp).toLocaleTimeString([], {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
-                </span>
-                <div>
-                  <div className="text-[14.5px] text-cream-50">
-                    {e.one_line_summary}
+            {items.map((e) => {
+              const imgUrl = suspectFrameUrl(e);
+              return (
+                <Link
+                  key={e.id}
+                  href={`/timeline/${e.id}`}
+                  className="card-glass ring-glow grid grid-cols-[80px_56px_1fr_auto] items-center gap-4 rounded-xl px-4 py-3 transition-transform hover:-translate-y-px"
+                >
+                  <span className="font-mono text-[12px] text-cream-50/55">
+                    {new Date(e.timestamp).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </span>
+                  {imgUrl ? (
+                    <img
+                      src={imgUrl}
+                      alt={e.suspect_description ?? "Suspect frame"}
+                      loading="lazy"
+                      className="h-14 w-14 rounded-md object-cover ring-1 ring-maroon-300/20"
+                      onError={(ev) => {
+                        ev.currentTarget.style.display = "none";
+                      }}
+                    />
+                  ) : (
+                    <div className="h-14 w-14 rounded-md bg-maroon-300/10 ring-1 ring-maroon-300/15" />
+                  )}
+                  <div>
+                    <div className="text-[14.5px] text-cream-50">
+                      {e.one_line_summary}
+                    </div>
+                    <div className="mt-0.5 font-mono text-[11px] text-cream-50/50">
+                      {e.scene} · {e.behavior_pattern}
+                    </div>
                   </div>
-                  <div className="mt-0.5 font-mono text-[11px] text-cream-50/50">
-                    {e.scene} · {e.behavior_pattern}
-                  </div>
-                </div>
-                <SeverityBadge tier={e.tier} />
-              </Link>
-            ))}
+                  <SeverityBadge tier={e.tier} />
+                </Link>
+              );
+            })}
           </div>
         </section>
       ))}

@@ -24,12 +24,19 @@ import {
   fetchCameras,
   formatTime,
   statusFromEntry,
+  suspectFrameUrl,
   tierFromName,
   type CameraEntry,
   type StreamMessage,
 } from "./lib/api";
 
-type IncidentRowData = { tier: Tier; title: string; node: string; time: string };
+type IncidentRowData = {
+  tier: Tier;
+  title: string;
+  node: string;
+  time: string;
+  imgUrl: string | null;
+};
 
 function useIncidentStream(): IncidentRowData[] {
   const [items, setItems] = useState<IncidentRowData[]>([]);
@@ -46,6 +53,8 @@ function useIncidentStream(): IncidentRowData[] {
           title: ev.one_line_summary ?? ev.suspect_description ?? "(no summary)",
           node: `${ev.node_id ?? "NODE-?"}${ev.scene ? ` · ${ev.scene.toUpperCase()}` : ""}`,
           time: formatTime(ev.timestamp),
+          // Suspect JPEG written by action_router on THEFT_CONFIRMED (tier 3/4).
+          imgUrl: suspectFrameUrl(ev),
         };
         setItems((prev) => [row, ...prev].slice(0, 50));
       } catch {

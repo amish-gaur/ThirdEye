@@ -4,7 +4,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft, Play } from "lucide-react";
 import { SeverityBadge } from "@safewatch/ui/web";
-import { getEvent } from "@/lib/api";
+import { getEvent, suspectFrameUrl } from "@/lib/api";
 import type { EventRecord } from "@safewatch/api-types";
 
 export default function EventDetail() {
@@ -46,13 +46,28 @@ export default function EventDetail() {
 
       <div className="grid gap-5 md:grid-cols-[1.2fr_1fr]">
         <div className="relative overflow-hidden rounded-2xl ring-glow border border-maroon-300/15">
-          <div
-            className="aspect-[16/10] w-full"
-            style={{
-              background:
-                "radial-gradient(circle at 30% 30%, #9A3142 0%, #5E1521 35%, #1F050A 75%, #0A0103 100%)",
-            }}
-          />
+          {(() => {
+            const imgUrl = suspectFrameUrl(ev);
+            return imgUrl ? (
+              <img
+                src={imgUrl}
+                alt={ev.suspect_description ?? "Suspect frame"}
+                loading="lazy"
+                className="aspect-[16/10] w-full object-cover"
+                onError={(e) => {
+                  e.currentTarget.style.display = "none";
+                }}
+              />
+            ) : (
+              <div
+                className="aspect-[16/10] w-full"
+                style={{
+                  background:
+                    "radial-gradient(circle at 30% 30%, #9A3142 0%, #5E1521 35%, #1F050A 75%, #0A0103 100%)",
+                }}
+              />
+            );
+          })()}
           <div className="absolute top-3 left-4 font-mono text-[10.5px] uppercase tracking-[0.22em] text-cream-50/70">
             CLIP · {ev.id} · 8.4s
           </div>

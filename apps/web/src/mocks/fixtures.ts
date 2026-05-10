@@ -53,6 +53,8 @@ export const events: EventRecord[] = [
     one_line_summary: "Package picked up by an unidentified person at the front porch.",
     timestamp: minutesAgo(2),
     thumb_url: "/mock/thumb-porch.jpg",
+    clip_path:
+      "/Users/amish/projects/ThirdEye/media/frames/inc_001_1778421476.jpg",
     yolo_classes: ["person", "package"],
     actions_taken: ["call_homeowner", "sms_homeowner", "amazon_refund_filed"],
   },
@@ -70,6 +72,8 @@ export const events: EventRecord[] = [
     one_line_summary: "Loitering near driveway gate.",
     timestamp: minutesAgo(34),
     thumb_url: "/mock/thumb-drive.jpg",
+    clip_path:
+      "/Users/amish/projects/ThirdEye/media/frames/inc_002_1778420112.jpg",
     yolo_classes: ["person"],
     actions_taken: ["sms_homeowner"],
   },
