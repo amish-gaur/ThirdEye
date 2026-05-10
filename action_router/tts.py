@@ -7,10 +7,12 @@ The MP3 is written into `MEDIA_DIR` and exposed by the FastAPI service at
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
 
+from ._trace import trace, trace_exception
 from .config import CONFIG, Config
 
 log = logging.getLogger("action_router.tts")
@@ -39,6 +41,12 @@ def synthesize_mp3(
         raise RuntimeError(f"elevenlabs SDK not installed: {exc}") from exc
 
     client = ElevenLabs(api_key=cfg.elevenlabs_api_key)
+    api_t0 = time.monotonic()
+    trace("ELEVENLABS_API", level="STEP",
+          voice_id=cfg.elevenlabs_voice_id,
+          model_id=cfg.elevenlabs_model_id,
+          output_format=cfg.elevenlabs_output_format,
+          out_path=str(out_path))
     try:
         audio_iter = client.text_to_speech.convert(
             text=script,
@@ -57,11 +65,18 @@ def synthesize_mp3(
                 bytes_written += len(chunk)
     except Exception as exc:
         out_path.unlink(missing_ok=True)
+        trace_exception("ELEVENLABS_ERR", exc,
+                        elapsed_s=round(time.monotonic() - api_t0, 3))
         raise RuntimeError(f"ElevenLabs convert() failed: {exc}") from exc
 
     if bytes_written == 0:
         out_path.unlink(missing_ok=True)
+        trace("ELEVENLABS_EMPTY", level="ERR",
+              elapsed_s=round(time.monotonic() - api_t0, 3),
+              hint="ElevenLabs returned a 0-byte stream — check API key + quota")
         raise RuntimeError("ElevenLabs returned 0 bytes")
 
     log.info("Synthesized %d bytes -> %s", bytes_written, out_path)
+    trace("ELEVENLABS_OK", level="OK", bytes=bytes_written, file=out_path.name,
+          elapsed_s=round(time.monotonic() - api_t0, 3))
     return out_path

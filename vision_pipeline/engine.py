@@ -629,7 +629,17 @@ _CARRYABLE_BOX_COLOR = (255, 80, 220)
 _CARDBOARD_BOX_COLOR = (255, 0, 255)
 
 
-_OVERLAY_MIN_CONFIDENCE = 0.70
+# Person threshold matches the confidence floor the theft tracker would
+# act on, so the overlay shows what the system actually sees. 0.70 was
+# too strict — when a subject fills the frame, YOLO scores them ~0.50-0.65
+# because only a partial torso is visible, and they vanished from the box
+# overlay even though they were being tracked.
+_OVERLAY_MIN_CONFIDENCE = 0.50
+# Cardboard floor balances "rendering real boxes" against "hallucinating
+# on chair backs and table edges". YOLO-World false-positives at 0.10-0.20
+# on any brown rectangular shape; legitimate cardboard typically clears
+# 0.30. Matches the theft tracker's CARDBOARD_BOX_MIN_CONFIDENCE default.
+_OVERLAY_MIN_CARDBOARD_CONFIDENCE = 0.30
 
 
 def _draw_overlay(
@@ -654,8 +664,8 @@ def _draw_overlay(
             return
         cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), color, thickness)
         # Confidence chip in the top-left of the box. Filled rectangle with
-        # the box's color, tight white text on top — mirrors the box hue so
-        # green = person / magenta = cardboard / pink = other carryable.
+        # the box's color, tight black text on top — black contrasts well
+        # against the bright green / magenta / pink chip backgrounds.
         label = f"{det.confidence:.2f}"
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
         chip_w = tw + 8
@@ -676,7 +686,7 @@ def _draw_overlay(
             (chip_x1 + 4, text_y),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.5,
-            (255, 255, 255),
+            (0, 0, 0),
             1,
             cv2.LINE_AA,
         )
@@ -688,15 +698,54 @@ def _draw_overlay(
         _draw(det, (0, 255, 0), 3 if is_candidate else 2)
 
     for det in decision.carryable_boxes:
-        if det.confidence < _OVERLAY_MIN_CONFIDENCE:
+        is_cardboard = det.label.strip().lower() == "cardboard box"
+        min_conf = (
+            _OVERLAY_MIN_CARDBOARD_CONFIDENCE
+            if is_cardboard
+            else _OVERLAY_MIN_CONFIDENCE
+        )
+        if det.confidence < min_conf:
             continue
         is_candidate = cand_carryable_box is not None and _box_iou(det.box, cand_carryable_box) > 0.3
-        color = (
-            _CARDBOARD_BOX_COLOR
-            if det.label.strip().lower() == "cardboard box"
-            else _CARRYABLE_BOX_COLOR
-        )
+        color = _CARDBOARD_BOX_COLOR if is_cardboard else _CARRYABLE_BOX_COLOR
         _draw(det, color, 3 if is_candidate else 2)
+
+    # Persistent anchor draw — fixes the static-scene flicker the user noticed.
+    # YOLO-World scores stationary cardboard wobbly (often dipping below the
+    # 0.30 overlay threshold for several frames in a row), so a per-frame
+    # draw makes the magenta box vanish until the user moves and the score
+    # re-spikes. Once the theft tracker has *anchored* a box (= multiple
+    # consistent detections over `anchor_seconds`), we trust it and keep
+    # rendering the anchor regardless of what THIS frame's confidence was.
+    # The anchor naturally clears when the box leaves the scene long enough,
+    # so this won't pin a stale ghost.
+    anchor_box = decision.package_anchor_box
+    if anchor_box is not None:
+        anchor_label = (decision.package_anchor_label or "cardboard box").strip().lower()
+        is_cardboard_anchor = anchor_label == "cardboard box"
+        anchor_color = (
+            _CARDBOARD_BOX_COLOR if is_cardboard_anchor else _CARRYABLE_BOX_COLOR
+        )
+        # Skip if the per-frame loop above already drew a box at this spot.
+        already_covered = False
+        for det in decision.carryable_boxes:
+            det_label = det.label.strip().lower()
+            det_min_conf = (
+                _OVERLAY_MIN_CARDBOARD_CONFIDENCE
+                if det_label == "cardboard box"
+                else _OVERLAY_MIN_CONFIDENCE
+            )
+            if det.confidence >= det_min_conf and _box_iou(det.box, anchor_box) > 0.3:
+                already_covered = True
+                break
+        if not already_covered:
+            ax1, ay1, ax2, ay2 = (int(round(v)) for v in anchor_box)
+            ax1 = min(max(0, ax1), max(0, w - 1))
+            ax2 = min(max(0, ax2), max(0, w - 1))
+            ay1 = min(max(0, ay1), max(0, h - 1))
+            ay2 = min(max(0, ay2), max(0, h - 1))
+            if ax2 > ax1 and ay2 > ay1:
+                cv2.rectangle(frame_bgr, (ax1, ay1), (ax2, ay2), anchor_color, 2)
 
 
 def _draw_qwen_panel(frame_bgr: Any, cls: "LastClassification") -> None:
@@ -765,6 +814,28 @@ _PRETTY_TIER = {
 }
 
 _PRETTY_BAR = "━" * 60
+
+
+_READY_BANNER_LINES = (
+    "██████╗  ███████╗  █████╗  ██████╗  ██╗   ██╗",
+    "██╔══██╗ ██╔════╝ ██╔══██╗ ██╔══██╗ ╚██╗ ██╔╝",
+    "██████╔╝ █████╗   ███████║ ██║  ██║  ╚████╔╝ ",
+    "██╔══██╗ ██╔══╝   ██╔══██║ ██║  ██║   ╚██╔╝  ",
+    "██║  ██║ ███████╗ ██║  ██║ ██████╔╝    ██║   ",
+    "╚═╝  ╚═╝ ╚══════╝ ╚═╝  ╚═╝ ╚═════╝     ╚═╝   ",
+)
+
+
+def _print_ready_banner() -> None:
+    """Big block-letter READY shown when warmup completes.
+
+    Loud on purpose: this is the visual cue during a demo that everything
+    is hot and the next frame will fire detection at steady-state latency.
+    """
+    print()
+    for line in _READY_BANNER_LINES:
+        print(f"{_PRETTY_GREEN}{_PRETTY_BOLD}{line}{_PRETTY_RESET}")
+    print()
 
 
 def _print_pretty_event(event: dict[str, Any]) -> None:
@@ -967,15 +1038,21 @@ class VisionEngine:
             classifier_label = f"cloud:{self.config.cloud_classifier_model}"
         else:
             classifier_label = f"qwen:{self.config.qwen_model}"
-        print()
+
+        # Demo-critical: pay the cold-start cost NOW (graph compile, MPS
+        # warmup, processor caches, cloud TLS handshake) so the first real
+        # frame after the banner detects in steady-state latency.
+        warm_summary = self._prewarm()
+
+        _print_ready_banner()
         print(f"{_PRETTY_GREEN}{_PRETTY_BOLD}{_PRETTY_BAR}{_PRETTY_RESET}")
-        print(f"{_PRETTY_GREEN}{_PRETTY_BOLD}  ✓ ThirdEye vision engine ready{_PRETTY_RESET}")
         print(f"  {_PRETTY_DIM}device  {_PRETTY_RESET} {self.device}")
         print(f"  {_PRETTY_DIM}yolo    {_PRETTY_RESET} {self.config.yolo_model}")
         print(f"  {_PRETTY_DIM}vlm     {_PRETTY_RESET} {classifier_label}")
         print(f"  {_PRETTY_DIM}cardbrd {_PRETTY_RESET} {self._cardboard_backend_active}")
         print(f"  {_PRETTY_DIM}capture {_PRETTY_RESET} {self.config.capture_width}x{self.config.capture_height}")
         print(f"  {_PRETTY_DIM}router  {_PRETTY_RESET} {'on' if self.config.post_events else 'off'}")
+        print(f"  {_PRETTY_DIM}warmup  {_PRETTY_RESET} {warm_summary}")
         print(f"{_PRETTY_GREEN}{_PRETTY_BOLD}{_PRETTY_BAR}{_PRETTY_RESET}")
         print()
         log.info(
@@ -1042,6 +1119,78 @@ class VisionEngine:
                 "opencv" if self._cardboard_backend_active == "auto" else "off"
             )
 
+    def _prewarm(self) -> str:
+        """Run a dummy inference through every loaded model so the first real
+        frame after startup hits steady-state latency.
+
+        Demo-critical: without this the first YOLO call pays MPS graph
+        compile (~1s), the first Qwen `generate()` pays caches + kernel
+        compile (~2-3s), and the first cloud round-trip pays TLS handshake.
+        We swallow the cost here so the camera-loop's first frame reports
+        a normal ~50ms detection instead of stalling for several seconds.
+        """
+        import numpy as np
+
+        t0 = time.time()
+        statuses: list[str] = []
+
+        dummy = np.zeros(
+            (self.config.capture_height, self.config.capture_width, 3),
+            dtype=np.uint8,
+        )
+
+        try:
+            self.yolo.predict(
+                source=dummy,
+                classes=self._monitored_class_ids,
+                conf=min(self.config.person_confidence, self.config.carryable_confidence),
+                device=self.device,
+                imgsz=self.config.yolo_input_size,
+                verbose=False,
+            )
+            # Also warm the busy-state imgsz so dynamic switches don't recompile.
+            busy = max(64, int(self.config.yolo_input_size_busy or 0))
+            if busy and busy != self.config.yolo_input_size:
+                self.yolo.predict(
+                    source=dummy,
+                    classes=self._monitored_class_ids,
+                    conf=0.25,
+                    device=self.device,
+                    imgsz=busy,
+                    verbose=False,
+                )
+            statuses.append("yolo")
+        except Exception as exc:
+            log.warning("YOLO prewarm failed: %s", exc)
+            statuses.append("yolo:err")
+
+        if self.yolo_world is not None:
+            try:
+                self.yolo_world.predict(
+                    source=dummy,
+                    conf=float(self.config.yolo_world_confidence),
+                    device=self.device,
+                    imgsz=max(64, int(self.config.yolo_world_input_size)),
+                    verbose=False,
+                )
+                statuses.append("yolo-world")
+            except Exception as exc:
+                log.warning("YOLO-World prewarm failed: %s", exc)
+                statuses.append("yolo-world:err")
+
+        if not self.config.mock_classifier and (
+            self.qwen is not None or self.cloud_classifier is not None
+        ):
+            try:
+                self._classify_with_qwen([dummy], 0.0)
+                statuses.append("vlm")
+            except Exception as exc:
+                log.warning("VLM prewarm failed: %s", exc)
+                statuses.append("vlm:err")
+
+        elapsed = time.time() - t0
+        return f"{', '.join(statuses) or 'none'} ({elapsed:.1f}s)"
+
     # ---------------------------------------------------------------------
     # Capture loop
     # ---------------------------------------------------------------------
@@ -1071,6 +1220,19 @@ class VisionEngine:
             daemon=True,
         )
         self.capture_thread.start()
+
+        # Demo-critical: block until the camera has produced at least one
+        # real frame before starting the processing worker. Otherwise the
+        # first ~100-500ms of "running" is just polling None frames while
+        # the webcam negotiates, and a fast suspect can walk through
+        # before frame 0 arrives.
+        camera_warm_deadline = time.time() + 3.0
+        while time.time() < camera_warm_deadline:
+            with self.capture_lock:
+                if self.latest_capture_frame is not None:
+                    break
+            time.sleep(0.02)
+
         self.processing_thread = threading.Thread(
             target=self._processing_worker,
             name="vision-processing",
@@ -1628,7 +1790,12 @@ class VisionEngine:
         max_area_ratio = max(float(self.config.cardboard_box_max_area_ratio), 0.55)
         if area_ratio > max_area_ratio:
             return False
-        if self._person_overlap_ratio(det.box, persons) > 0.85:
+        # Reject only when the cardboard box is essentially identical to a
+        # person box (>=0.95 overlap) — that's almost certainly the model
+        # tagging a torso shape as "cardboard". Lower thresholds rejected
+        # legitimate detections of someone holding a box in front of them,
+        # which is the canonical demo scene.
+        if self._person_overlap_ratio(det.box, persons) > 0.95:
             return False
         x1, y1, x2, y2 = det.box
         width = max(0.0, x2 - x1)
@@ -2297,16 +2464,18 @@ class VisionEngine:
     def _fire_theft_alert(self, event: dict[str, Any], frame_bgr: Any) -> None:
         """Hand a confirmed-theft event to the action router.
 
-        When ACTION_ROUTER_BASE_URL is set we use the spec path: save the
-        suspect frame, POST it to /upload, then fire a tier-4 EMERGENCY
-        event with `clip_path` set so the router can attach it to the
-        iMessage fan-out. When the env var isn't set we fall back to the
-        legacy publisher (config.action_router_url) so dev/test still work.
+        Default path is in-process: theft_alert.trigger_theft_alert imports
+        action_router.execute_action and runs the T4 EMERGENCY playbook
+        directly on this machine — parallel Twilio voice calls + parallel
+        iMessage fan-out via AppleScript on this Mac, with the suspect
+        frame attached. No /upload, no second-Mac dependency.
+
+        HTTP routing (POST to a remote action router) is opt-in via
+        ACTION_ROUTER_USE_HTTP=true; theft_alert handles the branch.
+        Legacy direct-publish fallback only fires if trigger_theft_alert
+        itself raised, so dev/test still see something land at the router.
         """
         if not self.config.post_events:
-            return
-        if not os.environ.get("ACTION_ROUTER_BASE_URL"):
-            self._publish_event(event)
             return
         try:
             trigger_theft_alert(
