@@ -19,10 +19,12 @@ from pathlib import Path
 from action_router.config import CONFIG
 
 ORDERS_URL = "https://www.amazon.com/gp/your-account/order-history"
+ORDER_FILTERS = ["months-3", "year-2026", "year-2025", "year-2024"]
 EXTRACT_MODEL = "claude-sonnet-4-5"
 
-EXTRACT_PROMPT = """You are given the visible HTML of an Amazon order history page.
-Extract the recent orders as JSON. For each order include:
+EXTRACT_PROMPT = """You are given the visible HTML of one or more Amazon order history pages
+(separated by <!--FILTER_BREAK-->). Extract every distinct order as JSON.
+For each order include:
 - order_id (the "Order #" string, e.g. "112-1234567-1234567")
 - order_date (ISO 8601 if possible, else the raw string)
 - delivered_date (ISO if shown, else null)
@@ -31,6 +33,7 @@ Extract the recent orders as JSON. For each order include:
 ASIN is a 10-character alphanumeric typically embedded in product URLs as /dp/ASIN/
 or /gp/product/ASIN/. Extract it from links if visible.
 
+Deduplicate by order_id across the merged HTML.
 Return ONLY a JSON array. No prose, no code fences. If you can't see any orders,
 return [].
 """
@@ -56,24 +59,33 @@ def main() -> int:
     cache_path = Path(os.environ.get("AMAZON_ORDERS_CACHE", str(CONFIG.amazon_orders_cache)))
     cache_path.parent.mkdir(parents=True, exist_ok=True)
 
+    htmls: list[str] = []
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         context = browser.new_context(
             storage_state=str(storage), viewport={"width": 1280, "height": 1600}
         )
         page = context.new_page()
-        page.goto(ORDERS_URL, timeout=45_000)
-        if "/ap/signin" in page.url:
-            print("Session expired. Re-run scripts/setup_amazon_session.py.")
-            browser.close()
-            return 1
-
-        # Pull only the orders region — full page HTML is huge and noisy.
-        try:
-            html = page.locator("#ordersContainer").first.inner_html(timeout=15_000)
-        except Exception:
-            html = page.content()
+        for f in ORDER_FILTERS:
+            url = f"{ORDERS_URL}?orderFilter={f}"
+            try:
+                page.goto(url, timeout=45_000)
+            except Exception as exc:
+                print(f"  [{f}] goto failed: {exc}")
+                continue
+            if "/ap/signin" in page.url:
+                print("Session expired. Re-run scripts/setup_amazon_session.py.")
+                browser.close()
+                return 1
+            # Let lazy-loaded order cards settle.
+            try:
+                page.wait_for_load_state("networkidle", timeout=10_000)
+            except Exception:
+                pass
+            htmls.append(page.content())
+            print(f"  [{f}] captured {len(htmls[-1])} chars")
         browser.close()
+    html = "\n<!--FILTER_BREAK-->\n".join(htmls)
 
     client = anthropic.Anthropic()
     resp = client.messages.create(
