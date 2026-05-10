@@ -78,7 +78,7 @@ class Config:
     yolo_model: str = os.getenv("YOLO_MODEL", "yolo11n.pt")
     yolo_input_size: int = _int("YOLO_INPUT_SIZE", 640)
     qwen_model: str = os.getenv("QWEN_MODEL", "Qwen/Qwen2-VL-2B-Instruct")
-    qwen_max_new_tokens: int = _int("QWEN_MAX_NEW_TOKENS", 96)
+    qwen_max_new_tokens: int = _int("QWEN_MAX_NEW_TOKENS", 160)
     qwen_min_pixels: int = _int("QWEN_MIN_PIXELS", 256 * 28 * 28)
     qwen_max_pixels: int = _int("QWEN_MAX_PIXELS", 512 * 28 * 28)
     qwen_frame_max_edge: int = _int("QWEN_FRAME_MAX_EDGE", 512)

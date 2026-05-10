@@ -49,24 +49,41 @@ Map behavior_pattern to a tier:
   3 ALERT     = taking_item, opening_container, fleeing
   4 EMERGENCY = collapsed, violence
 
-DESCRIPTION RULES (be specific):
-- ALWAYS include at least one CLOTHING COLOR. If you're not 100% sure, give
-  your best guess ("dark shirt", "light jacket"). NEVER write "person of
-  unclear appearance" — pick the most likely descriptor.
-- Include build/height only when clearly visible: "tall", "short", "average build".
-- Include accessories that stand out: "with a backpack", "wearing a cap",
-  "carrying a bag".
+DESCRIPTION RULES (the suspect_description is the MOST IMPORTANT field —
+the person on the phone needs enough detail to identify the suspect):
+- CLOTHING COLOR must be SPECIFIC. Prefer named colors ("brown", "navy",
+  "olive", "beige", "maroon", "forest green", "burgundy", "tan",
+  "charcoal", "cream") over vague "dark" / "light". Only fall back to
+  "dark <item>" / "light <item>" when the lighting genuinely makes the
+  hue unreadable — and even then, guess the most likely named color.
+- NAME THE GARMENT, not just the color: "brown hoodie", "navy puffer
+  jacket", "olive cargo pants", "white t-shirt", "gray sweatshirt".
+- Include HAIR when visible: color + length + style ("short black hair",
+  "long blonde ponytail", "shaved head", "shoulder-length brown hair",
+  "bald", "covered by hood").
+- Include FACIAL features when visible: facial hair ("clean-shaven",
+  "short beard", "mustache"), glasses, mask, approximate age band
+  ("20s", "30s", "40s", "older adult"), and apparent skin tone in
+  neutral terms ("light-skinned", "medium-skinned", "dark-skinned") —
+  ONLY when clearly visible. Do not invent these.
+- Include BUILD when visible: "tall and slim", "stocky", "average
+  build", "short and slight".
+- Include ACCESSORIES and CARRIED ITEMS: "black backpack", "red cap",
+  "carrying a cardboard box", "phone in hand", "gloves".
 - If only the upper body is visible, describe only upper-body clothing,
-  face, hair, and accessories. Do NOT guess jeans, pants, shoes, or other
-  lower-body details unless you can clearly see them.
-- 6-18 words. Lead with the most obvious visual feature.
+  face, hair, and accessories. Do NOT guess jeans, pants, shoes, or
+  other lower-body details unless you can clearly see them.
+- 12-25 words. Lead with the single most identifying feature
+  (distinctive jacket color, hair, or accessory).
 - Examples of GOOD descriptions:
-    "tall man in a black shirt and gray jeans with a backpack"
-    "short person in a dark hoodie and light pants"
-    "young woman in a green jacket carrying a tote bag"
+    "man in his 30s, short black hair, brown hoodie and dark jeans, black backpack, clean-shaven"
+    "young woman, long blonde hair, olive jacket over white t-shirt, carrying a cardboard package"
+    "stocky man, red baseball cap, navy puffer jacket, short beard, gloves on both hands"
+    "tall slim person, hood up, charcoal sweatshirt, black mask, white sneakers"
 - Examples of BAD descriptions (NEVER write these):
     "person of unclear appearance"
-    "a person"
+    "a person in dark clothing"
+    "person wearing a jacket"
     "subject"
 
 BEHAVIOR RULES (commit to a tier):
@@ -89,8 +106,11 @@ CONFIDENCE:
 NEVER include numbers, IDs, "person 0", "person 0.08", "id 3", "track_2",
 "conf=", bounding-box coords, or model names in any text field.
 
-SCENE: short phrase describing visible location ("library aisle", "office
-hallway", "front porch", "parking lot", "kitchen counter"). 2-8 words.
+SCENE: a brief phrase for the visible location ("front porch", "parking
+lot", "side gate", "kitchen counter"). 2-6 words. The homeowner already
+knows where their camera is pointed, so keep this short — spend your
+attention on suspect_description, which is what the listener actually
+needs to identify the person.
 
 OUTPUT (JSON only, no prose, no markdown, no code fences):
 {
@@ -98,7 +118,7 @@ OUTPUT (JSON only, no prose, no markdown, no code fences):
   "behavior_pattern": "<one of the patterns above>",
   "confidence": 0.0-1.0,
   "scene": "<2-8 word location>",
-  "suspect_description": "<6-18 word description with clothing color>",
+  "suspect_description": "<12-25 word description: specific clothing colors, garments, hair, build, accessories>",
   "one_line_summary": "<8-20 word summary of the behavior you saw>",
   "time_elapsed": "ignored"
 }
@@ -188,7 +208,7 @@ LOW_VALUE_PHRASES = (
     "empty scene",
 )
 
-MAX_DESCRIPTION_WORDS = 24
+MAX_DESCRIPTION_WORDS = 32
 MAX_SUMMARY_WORDS = 28
 
 
