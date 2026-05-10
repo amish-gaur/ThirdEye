@@ -1,4 +1,4 @@
-# SafeWatch — Demo Day Checklist
+# ThirdEye — Demo Day Checklist
 
 Run through this **top to bottom, in order**, before judging starts.  
 Everything is on branch **`action-router`**.
@@ -55,7 +55,7 @@ You must see:
 source .venv/bin/activate
 python -m scripts.send_test_event --tier 3
 ```
-Your phone should ring within ~10 seconds. After Twilio's trial intro you should hear the SafeWatch script.
+Your phone should ring within ~10 seconds. After Twilio's trial intro you should hear the ThirdEye script.
 
 **If call doesn't come:** check `errors` in the JSON response. Most likely cause: ngrok URL stale or `DRY_RUN=true` still set.
 
@@ -113,7 +113,7 @@ Same test — walk in with a backpack, stay in the zone for ~1 second.
 2. **Amish walks past the camera without a bag** → state stays IDLE / WATCHING, no call.
 3. **Amish walks in with a backpack and stands near the "door"** → overlay shows CANDIDATE → SUPPRESSED.
 4. **Sumedh's phone rings** → answer on speaker so judges hear the AI voice alert.
-5. **"This is your SafeWatch agent. [description]. Press 1 to notify your neighbors…"**
+5. **"This is your ThirdEye agent. [description]. Press 1 to notify your neighbors…"**
 6. Talk through the architecture: YOLO (detect) → BehaviorTracker (rules) → Qwen (verify) → Router → Twilio.
 
 ---

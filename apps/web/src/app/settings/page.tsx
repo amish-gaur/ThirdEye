@@ -1,16 +1,57 @@
 "use client";
-import { useEffect, useState } from "react";
-import { getContacts, getNodes } from "@/lib/api";
+import { useEffect, useMemo, useState } from "react";
+import {
+  addCamera,
+  cameraToNode,
+  discoverCameras,
+  getContacts,
+  getNodes,
+  type DiscoveredCamera,
+} from "@/lib/api";
+import { ReadyPillar } from "@/components/ReadyPillar";
+import { useCameras } from "@/lib/liveStore";
 import type { ContactRule, NodeSummary } from "@safewatch/api-types";
 
 export default function SettingsPage() {
-  const [nodes, setNodes] = useState<NodeSummary[]>([]);
+  const { cameras, refreshCameras } = useCameras();
+  const [fallbackNodes, setFallbackNodes] = useState<NodeSummary[]>([]);
   const [contacts, setContacts] = useState<ContactRule[]>([]);
+  const [discovered, setDiscovered] = useState<DiscoveredCamera[]>([]);
+  const [scanning, setScanning] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
 
   useEffect(() => {
-    getNodes().then(setNodes);
     getContacts().then(setContacts);
   }, []);
+
+  useEffect(() => {
+    if (cameras.length > 0) return;
+    getNodes().then(setFallbackNodes).catch(() => setFallbackNodes([]));
+  }, [cameras.length]);
+
+  const nodes: NodeSummary[] = useMemo(
+    () => (cameras.length > 0 ? cameras.map(cameraToNode) : fallbackNodes),
+    [cameras, fallbackNodes]
+  );
+
+  const scanLan = async () => {
+    setScanning(true);
+    try {
+      setDiscovered(await discoverCameras(4));
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const register = async (name: string, url: string) => {
+    setBusy(url);
+    try {
+      await addCamera(name, url);
+      await refreshCameras();
+    } finally {
+      setBusy(null);
+    }
+  };
 
   return (
     <>
@@ -21,36 +62,113 @@ export default function SettingsPage() {
         <h1 className="mt-2 font-serif text-[44px] leading-tight text-cream-50">
           Tune the system.
         </h1>
+        <div className="mt-4">
+          <ReadyPillar variant="hero" />
+        </div>
       </header>
 
       <div className="grid max-w-[860px] gap-4">
         <Section title="Cameras">
-          {nodes.map((n) => (
+          {nodes.length === 0 && (
+            <div className="font-mono text-[12px] text-cream-50/55">
+              No cameras registered yet — scan the LAN below.
+            </div>
+          )}
+          {cameras.map((c) => (
             <Row
-              key={n.node_id}
+              key={c.node_id}
               left={
                 <>
-                  <strong className="text-cream-50">{n.label}</strong>
+                  <strong className="text-cream-50">{c.name}</strong>
                   <span className="ml-2 font-mono text-[12px] text-cream-50/45">
-                    {n.node_id}
+                    {c.node_id}
                   </span>
+                  <div className="font-mono text-[11px] text-cream-50/50">
+                    {c.stream_url}
+                  </div>
                 </>
               }
               right={
                 <span
                   className={
                     "font-mono text-[11px] uppercase tracking-[0.18em] " +
-                    (n.online ? "text-cream-50/85" : "text-cream-50/40")
+                    (c.status === "running"
+                      ? "text-cream-50/85"
+                      : c.status === "warming"
+                      ? "text-maroon-200"
+                      : "text-cream-50/40")
                   }
                 >
-                  {n.online ? "● online" : "○ offline"}
+                  ● {c.status}
                 </span>
               }
             />
           ))}
-          <button className="mt-2 self-start rounded-full border border-maroon-300/30 px-4 py-1.5 text-[12.5px] text-cream-50 hover:bg-maroon-300/10">
-            Add a camera
-          </button>
+          {cameras.length === 0 &&
+            nodes.map((n) => (
+              <Row
+                key={n.node_id}
+                left={
+                  <>
+                    <strong className="text-cream-50">{n.label}</strong>
+                    <span className="ml-2 font-mono text-[12px] text-cream-50/45">
+                      {n.node_id}
+                    </span>
+                  </>
+                }
+                right={
+                  <span
+                    className={
+                      "font-mono text-[11px] uppercase tracking-[0.18em] " +
+                      (n.online ? "text-cream-50/85" : "text-cream-50/40")
+                    }
+                  >
+                    {n.online ? "● online (mock)" : "○ offline"}
+                  </span>
+                }
+              />
+            ))}
+
+          <div className="mt-3 flex items-center gap-2">
+            <button
+              onClick={scanLan}
+              disabled={scanning}
+              className="rounded-full border border-maroon-300/30 px-4 py-1.5 text-[12.5px] text-cream-50 hover:bg-maroon-300/10 disabled:opacity-50"
+            >
+              {scanning ? "Scanning…" : "Scan LAN for cameras"}
+            </button>
+            {discovered.length > 0 && (
+              <span className="font-mono text-[10.5px] uppercase tracking-[0.18em] text-cream-50/55">
+                {discovered.length} found
+              </span>
+            )}
+          </div>
+
+          {discovered.map((d) => {
+            const already = cameras.some((c) => c.stream_url === d.stream_url);
+            return (
+              <Row
+                key={d.stream_url}
+                left={
+                  <>
+                    <strong className="text-cream-50">{d.name}</strong>
+                    <span className="ml-2 font-mono text-[11.5px] text-cream-50/55">
+                      {d.host}:{d.port}
+                    </span>
+                  </>
+                }
+                right={
+                  <button
+                    disabled={busy !== null || already}
+                    onClick={() => register(d.name, d.stream_url)}
+                    className="rounded-full bg-cream-50 px-3 py-1 text-[11.5px] font-medium text-maroon-900 hover:bg-cream-100 disabled:opacity-50"
+                  >
+                    {already ? "Added" : busy === d.stream_url ? "Adding…" : "Add"}
+                  </button>
+                }
+              />
+            );
+          })}
         </Section>
 
         <Section title="Severity rules">

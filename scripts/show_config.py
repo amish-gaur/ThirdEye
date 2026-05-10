@@ -30,7 +30,7 @@ def _redact(key: str, val: object) -> object:
 def main() -> None:
     cfg = asdict(CONFIG)
     width = max(len(k) for k in cfg)
-    print(f"SafeWatch action-router config ({len(cfg)} keys):\n")
+    print(f"ThirdEye action-router config ({len(cfg)} keys):\n")
     for key, val in cfg.items():
         print(f"  {key:<{width}}  =  {_redact(key, val)}")
 

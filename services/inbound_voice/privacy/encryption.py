@@ -26,7 +26,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from ..internal.kms import KmsBackend, generate_data_key
 
-MAGIC = b"SWE1"  # SafeWatch Encrypted v1
+MAGIC = b"SWE1"  # ThirdEye Encrypted v1 (magic bytes retained for blob format compat)
 NONCE_LEN = 12
 
 
@@ -82,7 +82,7 @@ def decrypt(
     kms: KmsBackend,
 ) -> bytes:
     if not blob.startswith(MAGIC):
-        raise ValueError("not a SafeWatch encrypted blob")
+        raise ValueError("not a ThirdEye encrypted blob")
     body = blob[len(MAGIC):]
     if len(body) < NONCE_LEN + 16:
         raise ValueError("blob too short")

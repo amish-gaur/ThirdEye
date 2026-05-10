@@ -1,4 +1,4 @@
-"""Tests for the SafeWatch MCP tool surface.
+"""Tests for the ThirdEye MCP tool surface.
 
 The MCP server exposes four tools for Claude to call:
 

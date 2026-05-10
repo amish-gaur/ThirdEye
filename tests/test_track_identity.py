@@ -1,6 +1,6 @@
 """Tests for the track-anchored identity resolver.
 
-Covers the architectural fix for SafeWatch's "friend bends over package"
+Covers the architectural fix for ThirdEye's "friend bends over package"
 false-alarm: once a track id has been identified once on a clean frame, the
 identity must persist through subsequent frames where the face is occluded
 or low-quality, until the track ends or its TTL expires.

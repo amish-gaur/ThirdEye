@@ -1,9 +1,9 @@
-# Design: SafeWatch — Decentralized Neighborhood Vision Mesh
+# Design: ThirdEye — Decentralized Neighborhood Vision Mesh
 
 Hardware dropped (commodity-only thesis). Severity-tiered execution layer added.
 
 - **Branch:** main  
-- **Repo:** safewatch (local; no remote yet)  
+- **Repo:** thirdeye (local; no remote yet)  
 - **Status:** PRE-EVENT FINAL  
 - **Event:** HackDavis — UC Davis (24h build window)
 
@@ -19,7 +19,7 @@ Three failure modes today:
 2. **Single-home privacy projects** (Secluso, RECAM, Ucam, SecuraCV): solve isolation but only at one house. A burglar across five porches is invisible to all five projects independently. An elder who falls between two homes' fields of view goes unseen.
 3. **Flat alerting on every product**: Ring, Nest, Citizen all use a single notification stream — every event is a push notification, regardless of whether it's a delivery, a stranger, or an emergency. Result: alert fatigue. Real emergencies get lost in the noise.
 
-SafeWatch is the missing piece: a decentralized, opt-in, on-device camera mesh with **severity-aware response**, running entirely on devices people already own.
+ThirdEye is the missing piece: a decentralized, opt-in, on-device camera mesh with **severity-aware response**, running entirely on devices people already own.
 
 ---
 
@@ -46,7 +46,7 @@ The eureka other hackers will share: **privacy-as-isolation prevented neighborho
 - **Time:** 24-hour hackathon window. **Submission deadline on Devpost is hard** — confirm the exact cutoff on the official event page each year.
 - **Team:** 4 engineers (HackDavis max).
 - **Tracks selected (max 4):** Anthropic AI/ML, ElevenLabs, MongoDB Atlas, .tech Domain. **Auto-eligible** (no signup): Best Hack for Social Good (grand prize, peer vote), Most Creative, Most Technically Challenging, Hacker's Choice.
-- **No special hardware required for end users.** Hard product constraint: SafeWatch must run on devices people already own (a phone + a laptop). Hardware adds friction that defeats the "available to everyone" thesis we'll argue is what makes SafeWatch better than Ring.
+- **No special hardware required for end users.** Hard product constraint: ThirdEye must run on devices people already own (a phone + a laptop). Hardware adds friction that defeats the "available to everyone" thesis we'll argue is what makes ThirdEye better than Ring.
 - **Demo equipment** (team-side, not user-side): 2 phones (one per Mac as porch camera), 2 MacBooks (home brains), 1 phone for the "judge's homeowner phone" role, 1 phone for the "911 dispatcher" actor, 1 phone for the "family contact" actor. $20 ring-light. Fake Amazon box. Hoodie. 4 USB-C cables.
 - **No footage leaves the home.** Vision (YOLO, Moondream), embedding (CLIP), search (Atlas Vector) all run on the MacBooks. External services receive event metadata only: ElevenLabs (TTS string in, audio out), Anthropic Claude (event description in, narration out), Twilio (call/MMS metadata + pre-generated MP3 URL + clip URL). They never see live frames. Twilio MMS does see the *clip* (8-second MP4) — flagged in the pitch as "this is the one external service that receives video, only for outbound delivery to the homeowner."
 - **No real 911 calls.** Hard constraint. EMERGENCY tier calls a teammate playing dispatcher, with that phone's contact ID renamed "911 Dispatch" for visual effect. CA Penal Code §148.3 makes false dispatch reports a misdemeanor.
@@ -58,13 +58,13 @@ The eureka other hackers will share: **privacy-as-isolation prevented neighborho
 
 ## Premises
 
-1. **"Available to everyone" is the differentiator.** Ring requires hardware. Nest requires hardware. SafeWatch runs on a phone + a laptop. This is the strongest social-good argument we can make and it lives in the architecture, not the marketing.
-2. **Severity-aware response is the second differentiator.** Every existing consumer camera flat-alerts on motion. SafeWatch's tiered execution (AMBIENT / NOTICE / ALERT / EMERGENCY → tier-appropriate response) is the agent vs. watchdog distinction.
+1. **"Available to everyone" is the differentiator.** Ring requires hardware. Nest requires hardware. ThirdEye runs on a phone + a laptop. This is the strongest social-good argument we can make and it lives in the architecture, not the marketing.
+2. **Severity-aware response is the second differentiator.** Every existing consumer camera flat-alerts on motion. ThirdEye's tiered execution (AMBIENT / NOTICE / ALERT / EMERGENCY → tier-appropriate response) is the agent vs. watchdog distinction.
 3. **Grand prize is peer vote, not judge decision.** Optimize for technical novelty + memorability among 950 hackers.
 4. **Official rubric:** "Social Good, Creativity, Presentation + 3 track-specific criteria per opted track." Social Good is **baseline for ALL tracks**.
 5. **On-device VLMs are real but not magic.** Moondream 3 alone is too slow and non-deterministic on 16GB M-series for live stage detection (~1.8s/inference, prompt-sensitive, run-to-run variance). YOLOv11n at 9.2ms/inference is the deterministic trigger; Moondream is the verifier-and-classifier called only on triggered frames.
 6. **Zero training.** Every model is pretrained off-the-shelf (YOLO COCO, Moondream 3 Preview, CLIP ViT-B/32, Claude API, ElevenLabs API). We change behavior with prompts, not gradients.
-7. **Distribution is real:** post-hackathon, open-source on GitHub with one-command setup. Hosted at safewatch.tech.
+7. **Distribution is real:** post-hackathon, open-source on GitHub with one-command setup. Hosted at thirdeye.tech.
 
 ---
 
@@ -92,20 +92,20 @@ Two MacBooks, each acting as one home's brain, meshed via Tailscale. Each Mac ru
 | **Phone-to-Mac stream** | IP Webcam (Android) + ffmpeg, OR Larix Broadcaster (iOS) + RTSP. |
 | **Frontend / homeowner alert UI** | React + Vite + Tailwind, deployed as a **Progressive Web App (PWA)**. Web push notifications + audio playback via standard Web APIs — works on any phone or laptop browser, no app install. |
 | **Crypto** | ed25519 per Mac with pre-pinned keys. Event metadata + clip hash signed before mesh publication. |
-| **Domain** | safewatch.tech (free with .tech sponsor, models the **.tech track**). |
+| **Domain** | thirdeye.tech (free with .tech sponsor, models the **.tech track**). |
 | **Languages** | Python (vision, mesh, action router, voice services); TypeScript (frontend / PWA). |
 
 ---
 
 ## Execution Hierarchy
 
-This is the layer that makes SafeWatch feel like an *agent* instead of a motion-activated noisemaker. Existing cameras only have ON/OFF — every event triggers the same alert, leading to fatigue. SafeWatch's tiered execution means the system *cares appropriately* — quiet for routine, loud for theft, full-cascade for emergencies.
+This is the layer that makes ThirdEye feel like an *agent* instead of a motion-activated noisemaker. Existing cameras only have ON/OFF — every event triggers the same alert, leading to fatigue. ThirdEye's tiered execution means the system *cares appropriately* — quiet for routine, loud for theft, full-cascade for emergencies.
 
 | Tier | Trigger examples | Execution |
 |------|------------------|-----------|
 | **1. AMBIENT** | Person walking past, normal delivery, neighbor at door, vehicle passing | Log to event timeline + CLIP-embed for later semantic search. **Zero notification.** |
 | **2. NOTICE** | Stranger lingering >2min with no clear purpose, package dropped without delivery uniform, loitering, suspicious approach | **Web push + MMS** to homeowner with bounding-box-annotated photo + caption (*"Someone's been on your porch for 3 minutes."*). No call. Quiet. |
-| **3. ALERT** | Active theft, door handle being tested, unauthorized package pickup, forced approach | **Twilio outbound voice call** with AI describing the suspect by appearance + **MMS with 8-second clip from rolling buffer** + signed mesh broadcast to neighbor nodes. Caller ID: *"SafeWatch."* Homeowner can press 1 to notify neighbors, 2 to ignore. |
+| **3. ALERT** | Active theft, door handle being tested, unauthorized package pickup, forced approach | **Twilio outbound voice call** with AI describing the suspect by appearance + **MMS with 8-second clip from rolling buffer** + signed mesh broadcast to neighbor nodes. Caller ID: *"ThirdEye."* Homeowner can press 1 to notify neighbors, 2 to ignore. |
 | **4. EMERGENCY** | Confirmed break-in, forced entry, fall with no movement >30s, fire / smoke detected | **Simultaneous cascade**: (a) Twilio call to "911 dispatcher" (teammate phone) with structured incident report — address, event, suspect description, time elapsed, cryptographic hash; (b) Twilio call to homeowner; (c) Twilio call to pre-configured family contact; (d) full mesh broadcast to neighbors; (e) signed clip locked for evidence chain-of-custody. |
 
 ### The classifier prompt
@@ -129,8 +129,8 @@ Be conservative. False EMERGENCY classifications cost real-world response capaci
 
 ### Why this is the genius layer
 
-- **Existing consumer cameras have one notification stream.** SafeWatch has four. The system's response *fits* the situation.
-- **The classifier is on-device.** A cloud system can't make this judgment without seeing your footage. SafeWatch judges severity locally, then only the metadata (tier + summary) leaves the home.
+- **Existing consumer cameras have one notification stream.** ThirdEye has four. The system's response *fits* the situation.
+- **The classifier is on-device.** A cloud system can't make this judgment without seeing your footage. ThirdEye judges severity locally, then only the metadata (tier + summary) leaves the home.
 - **The router is auditable.** Open-source 150 LoC. You can read the rules. Ring's escalation logic is opaque corporate code.
 - **The cascade saves lives, not just packages.** Tier 4 is the difference between elder-falls-detected-immediately versus elder-found-at-shift-change. Davis is wildfire country — Tier 4 smoke detection is genuinely public infrastructure.
 
@@ -142,18 +142,18 @@ Be conservative. False EMERGENCY classifications cost real-world response capaci
 
 **0:15–0:35 — Tier 2 (NOTICE) live.** Teammate walks up to phone-camera, drops a package, leaves. On screen: YOLO bbox → Moondream classifies → NOTICE (delivery). The judge's phone gets a *quiet* push: *"Package delivered."* No call. **The system was smart enough not to overreact.**
 
-**0:35–1:10 — Tier 3 (ALERT) live.** Hooded teammate walks up, grabs the package, walks away. Moondream classifies → ALERT. Within 2 seconds: **judge's phone rings via Twilio** — caller ID *"SafeWatch."* Judge answers. AI voice: *"This is your SafeWatch agent. 6 seconds ago, someone in a red hoodie removed a package from your porch and walked north. I've sent the clip to your phone. Press 1 to notify your neighbors, 2 to ignore."* Judge presses 1. MMS clip lands. Mesh broadcast fans out — visible on dashboard.
+**0:35–1:10 — Tier 3 (ALERT) live.** Hooded teammate walks up, grabs the package, walks away. Moondream classifies → ALERT. Within 2 seconds: **judge's phone rings via Twilio** — caller ID *"ThirdEye."* Judge answers. AI voice: *"This is your ThirdEye agent. 6 seconds ago, someone in a red hoodie removed a package from your porch and walked north. I've sent the clip to your phone. Press 1 to notify your neighbors, 2 to ignore."* Judge presses 1. MMS clip lands. Mesh broadcast fans out — visible on dashboard.
 
 **1:10–1:35 — Tier 4 (EMERGENCY) recorded.** Pre-recorded fall scenario. Show the simultaneous cascade live on stage with three teammate phones lined up:
 
-- "911 Dispatcher" phone rings → AI: *"This is SafeWatch automated dispatch. Fall detected at 1234 Maple Street. Resident not moving for 30 seconds. Footage hash 0x7F3A... EMS recommended."*
+- "911 Dispatcher" phone rings → AI: *"This is ThirdEye automated dispatch. Fall detected at 1234 Maple Street. Resident not moving for 30 seconds. Footage hash 0x7F3A... EMS recommended."*
 - "Homeowner" phone rings simultaneously
 - "Family" phone rings simultaneously
 - Dashboard shows mesh broadcast to 4 neighbor nodes
 
 **1:35–1:55 — Architecture punchline.** Diagram: on-device YOLO+Moondream classifies severity → action router fires tier-appropriate response → Twilio + web-push + mesh execute in parallel. *"Classifier and router are 200 lines of Python. Whole stack runs on devices everyone already owns. Footage never leaves your home."*
 
-**1:55–2:00 — Close.** *"Privacy-respecting. Severity-aware. No hardware, no subscriptions. Vote SafeWatch."*
+**1:55–2:00 — Close.** *"Privacy-respecting. Severity-aware. No hardware, no subscriptions. Vote ThirdEye."*
 
 ---
 
@@ -166,7 +166,7 @@ Sleep rotation mandatory. Backup demo video must exist by **hour 12** of the bui
 | 0–2 | Ultralytics+MPS install, YOLOv11n smoke test on demo Mac | Tailscale auth, Anthropic+ElevenLabs+Twilio API smoke tests, severity-classifier prompt draft | Vite + PWA scaffold (manifest + service worker), web-push subscription stub | Phone-as-camera setup + RTSP stream test, demo room scout |
 | 2–6 | YOLO → frame buffer → person+box trigger working; rolling 15s deque integrated | Moondream 3 int4 loaded; severity classifier prompt → JSON parse; 3-mission tuning | Web push end-to-end (Mac → phone receives + vibrates + plays audio); event log UI | Phone stream → Mac inference end-to-end on both Macs |
 | 6–10 | Multi-mission prompts (theft/fall/smoke) + false-positive guards | **Action router (tier dispatch); ed25519 signing; Claude API integration; ElevenLabs MP3 generation; Twilio Voice (TwiML `<Play>`); Twilio MMS with clip + annotated thumbnail; image annotation via OpenCV** — Eng 4 helps with ngrok URL hosting | CLIP embedder + MongoDB Atlas Vector schema, 50 sample clips indexed; **opt-in consent flow** | Help Eng 2 with ngrok for Twilio media URLs; first end-to-end run-through; **record backup demo video by hour 12** |
-| 10–14 | Edge cases: poor light, multi-person frames, prompt failure modes | Voice cascade: 911-actor → homeowner → family parallel ringing; pre-cached fallback audio for Twilio failover; consent flag UI hooks | Search UI + ranked clip player; dashboard flash-red animation; .tech domain wiring (safewatch.tech) | Demo dry-run #1. **Sleep rotation: 2 of 4 sleep hours 12–16.** |
+| 10–14 | Edge cases: poor light, multi-person frames, prompt failure modes | Voice cascade: 911-actor → homeowner → family parallel ringing; pre-cached fallback audio for Twilio failover; consent flag UI hooks | Search UI + ranked clip player; dashboard flash-red animation; .tech domain wiring (thirdeye.tech) | Demo dry-run #1. **Sleep rotation: 2 of 4 sleep hours 12–16.** |
 | 14–18 | Final detection tuning per tier (more conservative on EMERGENCY) | Tier transition tuning; cross-tier de-duplication; Twilio failover plan | Final UI polish (CUT: framer-motion, Mapbox) | Demo dry-runs #2–3, pitch script lock |
 | 18–22 | False-positive thresholds | Voice agent script polish; Twilio call-routing edge cases | Demo deck slides, Devpost project page draft | Demo dry-runs #4–5, deck final, **other 2 of 4 sleep hours 16–20** |
 | 22–24 | Buffer / bug bash | Buffer / bug bash | Devpost project page final | **Submit to Devpost before the official cutoff** with backup video, slides, repo, 4-track selection |
@@ -190,7 +190,7 @@ Mapbox node map (use static SVG), framer-motion polish, two-phone-per-Mac scalin
 
 ## Pitch Deck (5 slides — backup if live demo fails)
 
-1. **Title** — SafeWatch. *"Privacy-respecting neighborhood vision mesh. Severity-aware response. Runs on devices you already own."*
+1. **Title** — ThirdEye. *"Privacy-respecting neighborhood vision mesh. Severity-aware response. Runs on devices you already own."*
 2. **Problem** — Cloud silos require hardware + subscriptions; flat-alerting causes fatigue; no project handles neighborhood-scale signal.
 3. **Insight** — Privacy-as-isolation prevented neighborhood signal. Severity-aware tiered execution + commodity-software VLA + signed metadata-only mesh dissolves it.
 4. **Architecture** — diagram (2 homes, Tailscale, YOLO+Moondream, severity classifier → action router → tier-appropriate response, web-push/Twilio/mesh, Atlas Vector).
@@ -237,7 +237,7 @@ A prior dry-run was missed. **Run these checks before hacking starts** so each "
 ## Distribution
 
 - **At demo:** running on two MacBooks + two phones (camera role) + three phones (homeowner / 911-actor / family roles, ideally a judge's + two teammates' phones). Devpost video as backup.
-- **Post-hackathon:** open-source on GitHub (MIT). One-command setup script for the Mac side. PWA for the phone side — anyone can register at safewatch.tech and install with two taps.
+- **Post-hackathon:** open-source on GitHub (MIT). One-command setup script for the Mac side. PWA for the phone side — anyone can register at thirdeye.tech and install with two taps.
 - **Real-world install path:** PWA covers iOS + Android out of the box. Mac brain is Homebrew-installable. **Zero friction adoption** — that's the thesis.
 - **CI/CD:** GitHub Actions for Python tests + frontend build on every push.
 
@@ -249,7 +249,7 @@ Use whatever time you have left before the hackathon clock starts. Final prep wi
 
 ### Pre-build checklist
 
-1. **Pre-auth all APIs:** Anthropic, ElevenLabs, **Twilio**, MongoDB Atlas, GoDaddy/.tech, Tailscale on every team member's Mac. Save tokens to a shared 1Password vault. Twilio: provision a phone number, verify caller ID is editable to "SafeWatch."
+1. **Pre-auth all APIs:** Anthropic, ElevenLabs, **Twilio**, MongoDB Atlas, GoDaddy/.tech, Tailscale on every team member's Mac. Save tokens to a shared 1Password vault. Twilio: provision a phone number, verify caller ID is editable to "ThirdEye."
 2. **Verify the severity-classifier JSON prompt.** Run 20 test frames through Moondream 3 with the classifier prompt. Confirm well-formed JSON. If unreliable, switch to multiple-choice + separate description prompt.
 3. **Verify Twilio outbound call latency on cellular AND wifi.** Target <3s ring, <4s AI voice. Test with a teammate's phone in another room.
 4. **Verify Twilio MMS with 8-second 480p MP4 attachment.** Confirm <5MB and <6s delivery.
@@ -259,7 +259,7 @@ Use whatever time you have left before the hackathon clock starts. Final prep wi
 8. **Pre-write detection prompts:** 5-10 for theft, 3-5 for elder falls, 2-3 for smoke. Commit to `prompts.txt`. Pick the best set during integration.
 9. **Buy demo props:** fake Amazon box, hoodie, $20 ring-light, 4 USB-C cables.
 10. **Pitch script + rehearsal:** 2 minutes. Memorize. One designated speaker. Rehearse multiple times before the build. Lead with "available to everyone + severity-aware."
-11. **Reserve safewatch.tech** with .tech sponsor (free, ~5 min).
+11. **Reserve thirdeye.tech** with .tech sponsor (free, ~5 min).
 12. **Pre-form team roles:** Eng 1 vision, **Eng 2 execution layer (severity classifier + action router + Twilio + voice — heaviest scope)**, Eng 3 frontend/PWA/web-push, Eng 4 demo/glue/streaming + Eng 2 helper during hours 6–10. Each owns their column.
 
 ### Hour zero (build starts)
@@ -270,7 +270,7 @@ Use whatever time you have left before the hackathon clock starts. Final prep wi
 ### Submission deadline
 
 - Submit to Devpost well before the posted cutoff (leave buffer).
-- At demo expo / peer vote: be at the table, demo the three-tier execution on repeat. Hand out a 1-pager with "github.com/<you>/safewatch" + a QR code linking to safewatch.tech where any visitor can install the PWA on their own phone in 30 seconds. **The PWA install on a judge's phone IS the demo.**
+- At demo expo / peer vote: be at the table, demo the three-tier execution on repeat. Hand out a 1-pager with "github.com/<you>/thirdeye" + a QR code linking to thirdeye.tech where any visitor can install the PWA on their own phone in 30 seconds. **The PWA install on a judge's phone IS the demo.**
 
 ---
 

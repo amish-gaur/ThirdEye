@@ -1,4 +1,4 @@
-"""SafeWatch MCP server.
+"""ThirdEye MCP server.
 
 Exposes cross-camera person search to any MCP client (Claude Desktop,
 Claude.ai, Claude Code). Tools are thin adapters over `search.core`

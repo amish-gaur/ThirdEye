@@ -25,7 +25,7 @@ def render_pair_page(*, token: str, cam_url: str, qr_url: str, status_url: str) 
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SafeWatch · Pair phone camera</title>
+<title>ThirdEye · Pair phone camera</title>
 <style>
 :root {{
   color-scheme: dark;
@@ -80,7 +80,7 @@ footer {{ color: var(--muted); font-size: 12px; margin-top: 48px; text-align: ce
     <div class="logo">3E</div>
     <div>
       <h1>Pair a phone as a Third Eye</h1>
-      <div class="subtitle">Any device, any camera - turned into a SafeWatch sensor in one scan.</div>
+      <div class="subtitle">Any device, any camera - turned into a ThirdEye sensor in one scan.</div>
     </div>
   </header>
 
@@ -89,7 +89,7 @@ footer {{ color: var(--muted); font-size: 12px; margin-top: 48px; text-align: ce
       <ol class="steps">
         <li>Open your phone&rsquo;s camera and point it at the QR code.</li>
         <li>Tap the link that appears, then allow camera access.</li>
-        <li>Lay the phone where you want SafeWatch to watch - that&rsquo;s it.</li>
+        <li>Lay the phone where you want ThirdEye to watch - that&rsquo;s it.</li>
       </ol>
       <div class="status" id="statusRow">
         <div class="dot warn" id="statusDot"></div>
@@ -117,7 +117,7 @@ footer {{ color: var(--muted); font-size: 12px; margin-top: 48px; text-align: ce
     </section>
   </div>
 
-  <footer>SafeWatch · phone-camera pairing · token <code>{token_safe}</code></footer>
+  <footer>ThirdEye · phone-camera pairing · token <code>{token_safe}</code></footer>
 </div>
 
 <script>
@@ -403,7 +403,7 @@ button.ghost {{ background: var(--cream); color: var(--ink); }}
   <div class="idle" id="idle">
     <div class="eyebrow"><span class="pip"></span> Phone · Third Eye sensor</div>
     <h1>Become a<br>Third <i>Eye</i>.</h1>
-    <p>Tap below, allow camera access, and prop your phone where you want SafeWatch to watch. The desktop pairing screen turns green the moment frames arrive.</p>
+    <p>Tap below, allow camera access, and prop your phone where you want ThirdEye to watch. The desktop pairing screen turns green the moment frames arrive.</p>
     <button class="cta" id="heroStartBtn">Start camera</button>
     <div class="tier-row">
       <div class="tier t-amb">Ambient</div>
@@ -473,7 +473,7 @@ async function start() {{
   startBtn.textContent = "Stop";
   startBtn.onclick = stop;
   metaState.textContent = "connecting";
-  titleEl.textContent = "Connecting to SafeWatch\u2026";
+  titleEl.textContent = "Connecting to ThirdEye\u2026";
   banner.style.display = "none";
   lockWake();
   connect();

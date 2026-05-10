@@ -1,2 +1,2 @@
-"""Vision pipeline package for SafeWatch / ThirdEye."""
+"""Vision pipeline package for ThirdEye."""
 

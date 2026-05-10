@@ -1,4 +1,4 @@
-"""SafeWatch MCP server — Claude is the UI.
+"""ThirdEye MCP server — Claude is the UI.
 
 Four tools exposed:
 
@@ -10,7 +10,7 @@ Four tools exposed:
 Thumbnails are 256-px JPEG q80 inline ImageContent blocks so the
 results render directly in Claude Desktop / Claude.ai / Claude Code.
 
-The same `SafeWatchTools` object is reused by the FastAPI HTTP
+The same `SafeWatchTools` object (class name retained) is reused by the FastAPI HTTP
 fallback (transport differs, logic is identical).
 
     .venv/bin/python -m mcp_server.server  # runs over stdio
@@ -225,7 +225,7 @@ def _empty_image() -> mcp_types.ImageContent:
 # ----------------------------------------------------------------------
 
 
-def build_server(tools: SafeWatchTools, name: str = "safewatch") -> FastMCP:
+def build_server(tools: SafeWatchTools, name: str = "thirdeye") -> FastMCP:
     """Wire `tools` into a FastMCP instance with all four tools exposed."""
     mcp = FastMCP(name)
 

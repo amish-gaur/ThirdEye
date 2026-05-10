@@ -118,13 +118,13 @@ Atlas Vector index on `clip_embedding`; standard indices on `(homeowner_id, time
 ## Lane 2: Phone infrastructure
 
 ### What it is
-The current router is **outbound only** — it dials homeowner/family/dispatch when events fire. Production needs **inbound**: the homeowner can dial the SafeWatch number to query, acknowledge an active alert, escalate, or get a status briefing.
+The current router is **outbound only** — it dials homeowner/family/dispatch when events fire. Production needs **inbound**: the homeowner can dial the ThirdEye number to query, acknowledge an active alert, escalate, or get a status briefing.
 
 ### Architecture
 
 **Inbound entry (`services/inbound_voice/`):**
 - Twilio number's webhook → `POST /inbound/voice` on FastAPI.
-- Caller-ID → look up homeowner; if unrecognized, polite "this line is for SafeWatch homeowners" hangup.
+- Caller-ID → look up homeowner; if unrecognized, polite "this line is for ThirdEye homeowners" hangup.
 - Two paths:
   - **Active incident path:** if there's a live tier-3+ event for this homeowner in the last 5 min, jump to "Press 1 to acknowledge, 2 to cancel, 3 to escalate, 4 to talk to the agent."
   - **Conversational path:** otherwise hand off to Rishab's ElevenLabs conversational agent for free-form ("anyone come to the porch today?", "what's happening now?") — same query backend as Lane 1.
@@ -153,7 +153,7 @@ Backed by Redis (Upstash for managed) so it survives FastAPI restarts and works 
 - Contract: a single `voice_state` Redis key per incident, plus an internal HTTP API (`POST /voice/leg/register`, `POST /voice/leg/cancel`, `GET /voice/state/{incident_id}`).
 
 ### What "done" looks like
-- Homeowner dials the SafeWatch number → routed to the right path within 1 ring.
+- Homeowner dials the ThirdEye number → routed to the right path within 1 ring.
 - Outbound + inbound never collide on the same incident.
 - Every call has an associated recording and transcript visible in the mobile app.
 - IVR works on flaky cell networks (DTMF fallback if speech recognition fails).

@@ -68,8 +68,8 @@ async def receive_voice(request: Request) -> Response:
     if not homeowner_id:
         return _xml(
             say_hangup(
-                "Thanks for calling SafeWatch. This line is for verified homeowners. "
-                "Please open the SafeWatch app to set up your account. Goodbye."
+                "Thanks for calling ThirdEye. This line is for verified homeowners. "
+                "Please open the ThirdEye app to set up your account. Goodbye."
             )
         )
 
@@ -107,12 +107,12 @@ async def receive_dtmf(request: Request) -> Response:
             if incident:
                 cache.clear_active_incident(incident_id, incident.homeowner_id)
             msg = (
-                "Acknowledged. SafeWatch will continue monitoring. "
+                "Acknowledged. ThirdEye will continue monitoring. "
                 f"{len(cancelled)} other call leg{'s' if len(cancelled) != 1 else ''} cancelled. Goodbye."
             )
             return _xml(say_hangup(msg))
         return _xml(say_hangup(
-            "Another contact already responded to this alert. SafeWatch is monitoring. Goodbye."
+            "Another contact already responded to this alert. ThirdEye is monitoring. Goodbye."
         ))
 
     if digits == "2":
@@ -121,7 +121,7 @@ async def receive_dtmf(request: Request) -> Response:
         if incident:
             cache.clear_active_incident(incident_id, incident.homeowner_id)
         return _xml(say_hangup(
-            "Cancelled. No further action will be taken. SafeWatch will continue monitoring. Goodbye."
+            "Cancelled. No further action will be taken. ThirdEye will continue monitoring. Goodbye."
         ))
 
     if digits == "3":
@@ -129,7 +129,7 @@ async def receive_dtmf(request: Request) -> Response:
         # We surface the signal via voice_state so Rishab's code can pick it up.
         store.update_leg_state(call_sid=call_sid, new_state=LegState.ANSWERED)
         return _xml(say_hangup(
-            "Escalated to emergency. SafeWatch is contacting your emergency dispatch now. Goodbye."
+            "Escalated to emergency. ThirdEye is contacting your emergency dispatch now. Goodbye."
         ))
 
     return _xml(say_hangup("No valid selection. Goodbye."))

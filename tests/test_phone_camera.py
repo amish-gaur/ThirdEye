@@ -28,7 +28,7 @@ from vision_pipeline.source_resolver import resolve_camera_source
 # The phone-camera ingest only validates the first three bytes (the JPEG SOI
 # marker). We keep the test fixture small and dependency-free; OpenCV/PIL
 # decoding is exercised by the live integration, not these unit tests.
-JPEG_1PX = b"\xff\xd8\xff" + b"safewatch-phone-camera-test-frame"
+JPEG_1PX = b"\xff\xd8\xff" + b"thirdeye-phone-camera-test-frame"
 
 
 @pytest.fixture

@@ -1,4 +1,4 @@
-# SafeWatch — Action Router (Person 2)
+# ThirdEye — Action Router (Person 2)
 
 Consumes the JSON event emitted by the vision pipeline and makes the real world react: Claude → ElevenLabs → Twilio.
 
@@ -59,10 +59,10 @@ python -m scripts.show_config
 python -m scripts.test_narration --tier 3
 
 # Step 3b: ElevenLabs only - synthesizes ./media/test.mp3
-python -m scripts.test_tts --text "This is a SafeWatch test."
+python -m scripts.test_tts --text "This is a ThirdEye test."
 
 # Step 4a: Twilio <Say> only - rings HOMEOWNER_PHONE with a static sentence
-python -m scripts.twilio_call_say --to "$HOMEOWNER_PHONE" --text "SafeWatch test call."
+python -m scripts.twilio_call_say --to "$HOMEOWNER_PHONE" --text "ThirdEye test call."
 
 # Step 4b: Twilio <Play> with the ElevenLabs MP3 - rings HOMEOWNER_PHONE
 python -m scripts.twilio_call_play --to "$HOMEOWNER_PHONE" --text "Red hoodie took your package six seconds ago."
@@ -129,7 +129,7 @@ action_router/
 
 - [ ] `pip install -r requirements.txt` clean on demo Mac
 - [ ] `.env` populated with real Anthropic / ElevenLabs / Twilio keys
-- [ ] Twilio number verified, caller ID editable to "SafeWatch"
+- [ ] Twilio number verified, caller ID editable to "ThirdEye"
 - [ ] `python -m scripts.show_config` shows everything green
 - [ ] `python -m scripts.test_narration --tier 3` returns a sensible script
 - [ ] `python -m scripts.test_tts --text "..."` writes a playable MP3

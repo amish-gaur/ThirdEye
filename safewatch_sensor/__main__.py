@@ -1,4 +1,8 @@
-"""SafeWatch sensor: turn this laptop's webcam into a discoverable camera.
+"""ThirdEye sensor: turn this laptop's webcam into a discoverable camera.
+
+(Module name `safewatch_sensor`, mDNS service type `_safewatch._tcp.local.`,
+and env var prefix `SAFEWATCH_SENSOR_*` are retained as code identifiers
+for protocol/import compatibility.)
 
 The brain (action_router) finds us via mDNS (`_safewatch._tcp.local.`) and
 consumes our MJPEG stream over plain HTTP. We deliberately do NOT use RTSP:
@@ -146,7 +150,7 @@ def _mjpeg_frames(webcam: _Webcam, fps: int) -> Iterable[bytes]:
 
 
 def build_app(webcam: _Webcam, *, sensor_name: str, fps: int = TARGET_FPS) -> FastAPI:
-    app = FastAPI(title="SafeWatch Sensor", docs_url=None, redoc_url=None)
+    app = FastAPI(title="ThirdEye Sensor", docs_url=None, redoc_url=None)
 
     @app.get("/health")
     def health() -> JSONResponse:
@@ -221,7 +225,7 @@ def _default_sensor_name() -> str:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="safewatch_sensor",
-        description="Turn this laptop's webcam into a SafeWatch-discoverable sensor.",
+        description="Turn this laptop's webcam into a ThirdEye-discoverable sensor.",
     )
     parser.add_argument(
         "--port",

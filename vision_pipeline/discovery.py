@@ -1,9 +1,11 @@
 """LAN camera discovery via mDNS / Zeroconf.
 
 The brain calls `discover_cameras(timeout=5.0)` and gets back a list of
-cameras advertising themselves on the local network. For SafeWatch's V1,
+cameras advertising themselves on the local network. For ThirdEye's V1,
 the only protocol we browse is `_safewatch._tcp.local.` — published by
-the `safewatch_sensor` daemon running on each demo laptop.
+the `safewatch_sensor` daemon running on each demo laptop. (The mDNS
+service type and Python module name are retained as code identifiers
+for protocol compatibility.)
 
 Each sensor announces an MJPEG-over-HTTP stream URL (not RTSP) because the
 existing vision engine already consumes MJPEG via OpenCV's VideoCapture
@@ -92,7 +94,7 @@ def discover_cameras(
     *,
     zeroconf: Zeroconf | None = None,
 ) -> list[DiscoveredCamera]:
-    """Browse the LAN for SafeWatch sensors. Blocks for up to `timeout`s.
+    """Browse the LAN for ThirdEye sensors. Blocks for up to `timeout`s.
 
     Returns a deduped list of DiscoveredCamera. Empty list on no results or
     if multicast is blocked on the network (common on hostile WiFi). Callers

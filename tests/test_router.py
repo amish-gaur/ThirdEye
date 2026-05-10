@@ -20,7 +20,7 @@ def test_tier2_sends_sms(dry_config) -> None:
     msg = result.messages[0]
     assert msg.dry_run is True
     assert msg.to == dry_config.homeowner_phone
-    assert "SafeWatch" in msg.body
+    assert "ThirdEye" in msg.body
 
 
 def test_tier3_calls_homeowner(dry_config) -> None:
@@ -77,6 +77,93 @@ def test_emergency_fans_out_to_neighbors_with_dedup(dry_config) -> None:
         "+15555550199",
     }
     assert any(a.startswith("call_neighbor") for a in result.actions)
+
+
+def test_emergency_fans_out_sms_with_keyframe_attachment(dry_config, mocker) -> None:
+    """Tier 4 fires four SMS in parallel with the four calls, and each SMS
+    carries the moment-of-theft keyframe as MMS media so every contact gets
+    the photo even if they don't pick up the call."""
+    import action_router.router as router_mod
+
+    cfg = dry_config
+    object.__setattr__(cfg, "neighbor_phones", ("+15555550199",))
+
+    # Drop a real keyframe under MEDIA_DIR mirroring the layout the vision
+    # pipeline writes (`media/frames/<incident>_<ts>.jpg`).
+    frame = cfg.media_dir / "frames" / "inc_demo_1700000000.jpg"
+    frame.parent.mkdir(parents=True, exist_ok=True)
+    frame.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg")
+
+    spy = mocker.spy(router_mod, "send_sms")
+    event = sample_event(tier=4)
+    event["clip_path"] = str(frame)
+
+    result = execute_action(event, config=cfg)
+    assert result.tier == 4
+
+    sms_targets = {m.to for m in result.messages if m.sid == "DRYRUN"}
+    assert sms_targets == {
+        cfg.homeowner_phone,
+        cfg.emergency_dispatch_phone,
+        cfg.family_phone,
+        "+15555550199",
+    }
+    expected_sms_actions = {
+        "sms_homeowner", "sms_dispatch", "sms_family", "sms_neighbor1",
+    }
+    assert expected_sms_actions <= set(result.actions)
+
+    expected_url = f"{cfg.public_base_url}/media/frames/{frame.name}"
+    media_args_per_call = [c.kwargs.get("media_urls") for c in spy.call_args_list]
+    # Every SMS to the four emergency contacts must include the keyframe URL.
+    matching = [m for m in media_args_per_call if m == [expected_url]]
+    assert len(matching) == 4, (
+        f"expected 4 SMS with frame attached, got {len(matching)}; "
+        f"all media args: {media_args_per_call}"
+    )
+
+
+def test_emergency_sms_falls_back_to_text_only_when_frame_missing(dry_config, mocker) -> None:
+    """If the keyframe path isn't usable (missing file, localhost base URL,
+    or no clip_path on the event), the SMS fan-out still goes out — just
+    without the MMS attachment. The voice calls and SMS body must still
+    fire so the alert isn't silently dropped."""
+    import action_router.router as router_mod
+
+    cfg = dry_config
+    spy = mocker.spy(router_mod, "send_sms")
+
+    event = sample_event(tier=4)
+    event.pop("clip_path", None)
+    result = execute_action(event, config=cfg)
+
+    assert result.tier == 4
+    assert len(result.calls) == 3  # dispatch + homeowner + family
+    sms = [m for m in result.messages if m.sid == "DRYRUN"]
+    assert len(sms) == 3
+    for call in spy.call_args_list:
+        assert call.kwargs.get("media_urls") is None
+
+
+def test_emergency_skips_mms_when_public_base_url_is_localhost(dry_config, mocker, tmp_path) -> None:
+    """Twilio can't fetch from 127.0.0.1 — the resolver must refuse to
+    advertise a localhost frame URL even if clip_path is otherwise valid."""
+    import action_router.router as router_mod
+
+    cfg = dry_config
+    object.__setattr__(cfg, "public_base_url", "http://127.0.0.1:8001")
+    frame = cfg.media_dir / "frames" / "inc_local.jpg"
+    frame.parent.mkdir(parents=True, exist_ok=True)
+    frame.write_bytes(b"\xff\xd8\xff\xe0fake-jpeg")
+
+    spy = mocker.spy(router_mod, "send_sms")
+    event = sample_event(tier=4)
+    event["clip_path"] = str(frame)
+
+    result = execute_action(event, config=cfg)
+    assert result.tier == 4
+    for call in spy.call_args_list:
+        assert call.kwargs.get("media_urls") is None
 
 
 def test_tier3_call_path_does_not_depend_on_public_base_url(dry_config) -> None:

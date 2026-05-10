@@ -24,7 +24,7 @@ log = logging.getLogger("inbound_voice.app")
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="SafeWatch — Phone Infra")
+    app = FastAPI(title="ThirdEye — Phone Infra")
 
     @app.get("/health")
     def health() -> dict[str, Any]:

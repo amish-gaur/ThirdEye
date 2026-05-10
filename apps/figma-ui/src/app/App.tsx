@@ -22,14 +22,24 @@ import { CameraTile } from "./components/CameraTile";
 import { ThirdEyeLogo } from "./components/ThirdEyeLogo";
 import {
   BACKEND_URL,
+  addCamera,
+  discoverCameras,
   fetchCameras,
   formatTime,
   statusFromEntry,
   suspectFrameUrl,
   tierFromName,
   type CameraEntry,
+  type DiscoveredCamera,
   type StreamMessage,
 } from "./lib/api";
+import {
+  BackendProvider,
+  IdentityProvider,
+  LoginGate,
+  useBackend,
+  useIdentity,
+} from "./lib/identity";
 
 type IncidentRowData = {
   tier: Tier;
@@ -158,6 +168,18 @@ const C = {
 };
 
 export default function App() {
+  return (
+    <IdentityProvider>
+      <BackendProvider>
+        <LoginGate>
+          <AppInner />
+        </LoginGate>
+      </BackendProvider>
+    </IdentityProvider>
+  );
+}
+
+function AppInner() {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("dashboard");
 
@@ -321,33 +343,100 @@ function TopBar({ tab, setTab }: { tab: string; setTab: (s: string) => void }) {
           );
         })}
       </nav>
-      <StatusPill />
+      <div className="flex items-center gap-3">
+        <StatusPill />
+        <IdentityBadge />
+      </div>
     </header>
   );
 }
 
 function StatusPill() {
-  const [t, setT] = useState(new Date());
-  useEffect(() => {
-    const id = setInterval(() => setT(new Date()), 1000);
-    return () => clearInterval(id);
-  }, []);
+  const { state, warmup } = useBackend();
+  const cameras = useCameras();
+  const running = cameras.filter((c) => c.status === "running").length;
+  const warming = cameras.filter((c) => c.status === "warming").length;
+
+  // Pick the most-load-bearing label so a small pill conveys the right state.
+  const label =
+    state === "offline"
+      ? "BACKEND OFFLINE"
+      : warming > 0 && running === 0
+      ? `WARMING · ${warmup?.elapsed_s.toFixed(0) ?? 0}S`
+      : warmup?.state === "ready"
+      ? `READY · ${running}/${cameras.length || 0} LIVE`
+      : state === "live"
+      ? "BACKEND READY"
+      : "CONNECTING…";
+
+  const bg =
+    state === "offline" ? C.red : warmup?.state === "ready" ? "#3a8e54" : C.gold;
+  const fg = state === "offline" || warmup?.state === "ready" ? C.cream : C.ink;
+
   return (
     <div
       className="flex items-center gap-2 px-3 py-2 rounded-full"
       style={{
-        background: C.gold,
+        background: bg,
         border: `3px solid ${C.ink}`,
         boxShadow: `0 3px 0 ${C.ink}`,
       }}
     >
-      <ShieldCheck size={14} style={{ color: C.ink }} />
+      <motion.span
+        className="w-2 h-2 rounded-full"
+        style={{ background: fg, border: `1.5px solid ${C.ink}` }}
+        animate={state === "live" ? { opacity: [1, 0.4, 1] } : { opacity: 1 }}
+        transition={{ duration: 1.6, repeat: Infinity }}
+      />
       <span
         className="text-[11px] tracking-[0.2em]"
-        style={{ fontFamily: "DM Mono, monospace", color: C.ink }}
+        style={{ fontFamily: "DM Mono, monospace", color: fg }}
       >
-        ALL LOCAL · {t.toLocaleTimeString([], { hour12: false })}
+        {label}
       </span>
+    </div>
+  );
+}
+
+function IdentityBadge() {
+  const { identity, signOut } = useIdentity();
+  if (!identity) return null;
+  const initials = identity.name
+    .split(/\s+/)
+    .map((p) => p[0])
+    .filter(Boolean)
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+  return (
+    <div className="flex items-center gap-2">
+      <div
+        className="grid place-items-center w-8 h-8 rounded-full"
+        style={{
+          background: C.gold,
+          color: C.ink,
+          border: `3px solid ${C.ink}`,
+          fontFamily: "DM Mono, monospace",
+          fontSize: 11,
+          fontWeight: 700,
+          letterSpacing: 0,
+        }}
+        title={`${identity.name} · ${identity.email}`}
+      >
+        {initials}
+      </div>
+      <button
+        onClick={signOut}
+        className="hidden md:inline-flex px-3 py-1.5 rounded-full text-[10px] tracking-[0.18em]"
+        style={{
+          fontFamily: "DM Mono, monospace",
+          background: C.cream,
+          color: C.ink,
+          border: `2px solid ${C.ink}`,
+        }}
+      >
+        SIGN OUT
+      </button>
     </div>
   );
 }
@@ -552,12 +641,27 @@ function TierLegend() {
 
 function LiveView() {
   const cameras = useCameras();
+  // Vision engine writes its annotated frame (boxes + confidences) here on
+  // every loop. Same exact image the engine's OpenCV window shows, served
+  // by the action_router's static mount.
+  const enginePreview = `${BACKEND_URL}/media/live/preview.jpg`;
   return (
     <div>
-      <SectionHeader title="Live View" sub="Streams mount here when nodes connect" />
+      <SectionHeader title="Live View" sub="Vision engine preview · boxes + confidence overlays" />
       <div className="mt-8">
         {cameras.length === 0 ? (
-          <RobberWaiting height={420} />
+          // No LAN cams registered → render the engine preview running on
+          // this Mac. Boxes, classes, confidences are baked into the JPEG
+          // by the engine, so the web shows exactly what the overlay sees.
+          <div className="grid grid-cols-1 gap-6">
+            <CameraTile
+              name="THIS LAPTOP · ENGINE PREVIEW"
+              status="live"
+              previewUrl={enginePreview}
+              delay={0}
+              large
+            />
+          </div>
         ) : (
           <div className="grid grid-cols-2 gap-6">
             {cameras.map((c, i) => (
@@ -736,7 +840,10 @@ function EdgeView() {
 function SettingsView() {
   return (
     <div>
-      <SectionHeader title="Settings" sub="Routing · contacts · escalation thresholds" />
+      <SectionHeader title="Settings" sub="Routing · contacts · LAN cameras" />
+      <div className="mt-6">
+        <LANScanPanel />
+      </div>
       <div className="mt-6 grid grid-cols-12 gap-10 items-start">
         <div className="col-span-7 space-y-3">
         {[
@@ -792,6 +899,174 @@ function SettingsView() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function LANScanPanel() {
+  const cameras = useCameras();
+  const [discovered, setDiscovered] = useState<DiscoveredCamera[]>([]);
+  const [scanning, setScanning] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [manualName, setManualName] = useState("Front camera");
+  const [manualUrl, setManualUrl] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const scan = async () => {
+    setScanning(true);
+    setError(null);
+    try {
+      const list = await discoverCameras(4);
+      setDiscovered(list);
+      if (list.length === 0) {
+        setError("Nothing advertising on the LAN. Add manually below.");
+      }
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const register = async (name: string, url: string) => {
+    setBusy(url);
+    setError(null);
+    try {
+      const entry = await addCamera(name, url);
+      if (!entry) {
+        setError("Couldn't register that stream. Make sure it's on the LAN (HTTP/RTSP, private IP).");
+      } else if (manualUrl === url) {
+        setManualUrl("");
+      }
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div
+      className="px-5 py-5 rounded-[14px]"
+      style={{ background: C.cream, border: `4px solid ${C.ink}`, boxShadow: `0 6px 0 ${C.ink}` }}
+    >
+      <div className="flex items-center justify-between">
+        <div
+          className="text-[11px] tracking-[0.3em]"
+          style={{ fontFamily: "DM Mono, monospace", color: C.ink }}
+        >
+          LAN CAMERAS · {cameras.length} REGISTERED
+        </div>
+        <motion.button
+          whileTap={{ scale: 0.96 }}
+          disabled={scanning}
+          onClick={scan}
+          className="px-4 py-1.5 rounded-full text-[11px] tracking-[0.18em] disabled:opacity-50"
+          style={{
+            fontFamily: "DM Mono, monospace",
+            background: scanning ? C.cream : C.gold,
+            color: C.ink,
+            border: `3px solid ${C.ink}`,
+          }}
+        >
+          {scanning ? "SCANNING…" : "SCAN LAN"}
+        </motion.button>
+      </div>
+
+      {discovered.length > 0 && (
+        <div className="mt-4 space-y-2">
+          {discovered.map((d) => {
+            const already = cameras.some((c) => c.stream_url === d.stream_url);
+            return (
+              <div
+                key={d.stream_url}
+                className="flex items-center justify-between px-3 py-2 rounded-lg"
+                style={{ background: C.cream, border: `3px solid ${C.ink}` }}
+              >
+                <div>
+                  <div
+                    className="text-[12px] tracking-[0.18em]"
+                    style={{ fontFamily: "DM Mono, monospace", color: C.ink }}
+                  >
+                    {d.name.toUpperCase()}
+                  </div>
+                  <div
+                    className="text-[10px]"
+                    style={{ fontFamily: "DM Mono, monospace", color: C.deep, opacity: 0.7 }}
+                  >
+                    {d.host}:{d.port} · {d.stream_url}
+                  </div>
+                </div>
+                <button
+                  disabled={busy !== null || already}
+                  onClick={() => register(d.name, d.stream_url)}
+                  className="px-3 py-1 rounded-full text-[10px] tracking-[0.18em] disabled:opacity-50"
+                  style={{
+                    fontFamily: "DM Mono, monospace",
+                    background: already ? "#cfc4a6" : C.red,
+                    color: already ? C.ink : C.cream,
+                    border: `2px solid ${C.ink}`,
+                  }}
+                >
+                  {already ? "ADDED" : busy === d.stream_url ? "ADDING…" : "ADD"}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="mt-4 grid grid-cols-[1fr_2fr_auto] gap-2">
+        <input
+          value={manualName}
+          onChange={(e) => setManualName(e.target.value)}
+          placeholder="Camera name"
+          className="px-3 py-2 outline-none text-[12px]"
+          style={{
+            background: C.cream,
+            color: C.ink,
+            border: `3px solid ${C.ink}`,
+            borderRadius: 10,
+          }}
+        />
+        <input
+          value={manualUrl}
+          onChange={(e) => setManualUrl(e.target.value)}
+          placeholder="http://192.168.1.42:8765/stream"
+          className="px-3 py-2 outline-none text-[12px]"
+          style={{
+            background: C.cream,
+            color: C.ink,
+            border: `3px solid ${C.ink}`,
+            borderRadius: 10,
+            fontFamily: "DM Mono, monospace",
+          }}
+        />
+        <button
+          disabled={busy !== null || !manualUrl}
+          onClick={() => register(manualName || "Camera", manualUrl)}
+          className="px-4 py-2 rounded-full text-[11px] tracking-[0.18em] disabled:opacity-50"
+          style={{
+            fontFamily: "DM Mono, monospace",
+            background: C.red,
+            color: C.cream,
+            border: `3px solid ${C.ink}`,
+          }}
+        >
+          ADD
+        </button>
+      </div>
+
+      {error && (
+        <div
+          className="mt-3 px-3 py-2 text-[10px] tracking-[0.18em]"
+          style={{
+            fontFamily: "DM Mono, monospace",
+            color: C.red,
+            background: "rgba(200,34,45,0.08)",
+            border: `2px solid ${C.red}`,
+            borderRadius: 8,
+          }}
+        >
+          {error.toUpperCase()}
+        </div>
+      )}
     </div>
   );
 }

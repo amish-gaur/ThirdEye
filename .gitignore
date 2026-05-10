@@ -48,3 +48,7 @@ dist/
 build/
 .pnpm-store/
 .claude/
+
+# iOS — pinned DerivedData (set by Makefile -derivedDataPath)
+apps/ios/.build/
+apps/ios/ThirdEye.xcodeproj/

@@ -32,6 +32,8 @@ struct RootView: View {
     @StateObject private var incidents = IncidentStream()
     @StateObject private var cameras = CamerasStore()
     @StateObject private var auth = AuthStore()
+    @StateObject private var backend = BackendStatus()
+    @StateObject private var identity = IdentityStore()
 
     var body: some View {
         Group {
@@ -44,6 +46,21 @@ struct RootView: View {
             }
         }
         .environmentObject(auth)
+        .environmentObject(backend)
+        .environmentObject(identity)
+        .onAppear {
+            backend.start()
+            // If onboarding was completed before but the web never claimed,
+            // resume polling so the badge can flip to "linked" silently.
+            if identity.identity != nil && !(identity.identity?.isClaimed ?? false) {
+                identity.startPolling()
+            }
+        }
+        .onDisappear {
+            backend.stop()
+            identity.stopPolling()
+            identity.stopWarmup()
+        }
     }
 
     private var main: some View {

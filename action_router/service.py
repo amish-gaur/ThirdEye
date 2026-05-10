@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 import uuid
 from typing import Any, Dict, List
 from urllib.parse import parse_qs
@@ -22,6 +23,7 @@ from .amazon_return_agent import initiate_return
 from .claude_identifier import install as install_claude_identifier
 from .config import CONFIG
 from .discovery_routes import create_discovery_router
+from .identity import get_identity_store
 from .router import execute_action
 from .twiml import say_response
 
@@ -46,7 +48,7 @@ async def _broadcast_event(payload: Dict[str, Any]) -> None:
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="SafeWatch Action Router")
+    app = FastAPI(title="ThirdEye Action Router")
 
     # Permissive CORS so the figma-ui dev server (vite on localhost:3000+) and
     # any LAN client can hit the API directly. Tighten if this ever ships
@@ -71,7 +73,11 @@ def create_app() -> FastAPI:
         log.exception("claude_identifier install failed; falling back to stub")
 
     # LAN camera discovery (mDNS) + camera-subprocess registry.
-    app.include_router(create_discovery_router())
+    discovery_router = create_discovery_router()
+    app.include_router(discovery_router)
+    camera_registry = discovery_router.state_registry  # type: ignore[attr-defined]
+
+    identity_store = get_identity_store()
 
     @app.get("/health")
     def health() -> Dict[str, Any]:
@@ -84,6 +90,85 @@ def create_app() -> FastAPI:
             "public_base_url": CONFIG.public_base_url,
             "twilio_configured": bool(CONFIG.twilio_account_sid),
         }
+
+    # ─── Identity (phone → web handoff) ──────────────────────────────────
+    # Phone POSTs identity → backend mints a 6-digit code → web claims it.
+    # See action_router/identity.py for the storage contract.
+
+    @app.post("/api/identity")
+    async def identity_submit(request: Request) -> JSONResponse:
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"invalid json: {exc}")
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="payload must be an object")
+        try:
+            session = identity_store.submit(
+                name=str(payload.get("name", "")),
+                email=str(payload.get("email", "")),
+                device_id=payload.get("device_id"),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return JSONResponse(session.to_dict(), status_code=201)
+
+    @app.get("/api/identity/by-code/{code}")
+    async def identity_by_code(code: str) -> JSONResponse:
+        session = identity_store.get_by_code(code)
+        if session is None:
+            raise HTTPException(status_code=404, detail="unknown or expired code")
+        return JSONResponse(session.to_dict())
+
+    @app.post("/api/identity/by-code/{code}/claim")
+    async def identity_claim(code: str) -> JSONResponse:
+        session = identity_store.claim(code)
+        if session is None:
+            raise HTTPException(status_code=404, detail="unknown or expired code")
+        return JSONResponse(session.to_dict())
+
+    # ─── Warmup ──────────────────────────────────────────────────────────
+    # Truthful readiness signal: the vision engine only POSTs ready after
+    # it has loaded YOLO, Qwen weights, processor caches, and run a
+    # throwaway inference (`_prewarm()` in vision_pipeline/engine.py).
+    # That flips the registry entry from `warming` → `running`. So
+    # `state == "ready"` here is equivalent to "your first real frame
+    # will not pay a cold-start tax."
+
+    @app.get("/api/warmup")
+    def warmup_status() -> Dict[str, Any]:
+        entries = camera_registry.active()
+        running = [e for e in entries if e.status == "running"]
+        warming = [e for e in entries if e.status == "warming"]
+        crashed = [e for e in entries if e.status == "crashed"]
+
+        if running:
+            state = "ready"
+            elapsed = max(
+                (e.ready_at - e.started_at) for e in running if e.ready_at
+            ) if any(e.ready_at for e in running) else 0.0
+        elif warming:
+            state = "warming"
+            elapsed = max(time.time() - e.started_at for e in warming)
+        else:
+            state = "cold"
+            elapsed = 0.0
+
+        return {
+            "state": state,
+            "elapsed_s": round(elapsed, 2),
+            "running": len(running),
+            "warming": len(warming),
+            "crashed": len(crashed),
+            "nodes": [e.to_dict() for e in entries],
+        }
+
+    @app.post("/api/warmup")
+    def warmup_trigger() -> Dict[str, Any]:
+        """Idempotent — vision pipeline already runs on `make run`. We
+        return the live state so the caller (phone during onboarding)
+        can poll for `ready` without a separate GET first."""
+        return warmup_status()
 
     _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]")
 
@@ -183,7 +268,7 @@ def create_app() -> FastAPI:
         if digits == "1":
             log.info("Tier 3 IVR accepted neighbor notification request call_sid=%s", call_sid)
             twiml = say_response(
-                "Neighbor notification request received. SafeWatch will continue monitoring. Goodbye."
+                "Neighbor notification request received. ThirdEye will continue monitoring. Goodbye."
             )
         elif digits == "2":
             log.info("Tier 3 IVR acknowledged ignore request call_sid=%s", call_sid)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Replay multiple pre-recorded videos through the cross-camera ingest pipeline.
 
-Each video becomes one camera in the SafeWatch neighborhood. The
+Each video becomes one camera in the ThirdEye neighborhood. The
 script runs them sequentially (avoids GPU contention) and writes
 all tracks/samples to a single shared SQLite store + media root,
 which the MCP server / HTTP fallback then queries.
@@ -207,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
         sample_every_n=args.sample_every_n,
     )
 
-    print("\n=== SafeWatch replay summary ===")
+    print("\n=== ThirdEye replay summary ===")
     for cam_id, info in summary["per_cam"].items():
         if info["error"]:
             print(f"  {cam_id}: ERROR — {info['error']}")

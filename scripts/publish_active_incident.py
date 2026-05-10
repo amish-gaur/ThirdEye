@@ -10,7 +10,7 @@ inbound IVR to behave as if a real tier-3 event just fired:
         --summary "person reaching toward porch package" \
         --scene "the front porch"
 
-Then dial the SafeWatch number (with a phone whose verified-phone row points
+Then dial the ThirdEye number (with a phone whose verified-phone row points
 to `hwn_alice`) and the inbound webhook will play the active-incident IVR.
 """
 

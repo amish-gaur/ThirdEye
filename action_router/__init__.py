@@ -1,4 +1,4 @@
-"""SafeWatch action router (Person 2).
+"""ThirdEye action router (Person 2).
 
 Public surface:
     execute_action(event_json) -> ActionResult

@@ -10,7 +10,7 @@ def _seed_recording(fake_db, *, homeowner_id: str, recording_id: str, retain_unt
         {
             "recording_id": recording_id,
             "homeowner_id": homeowner_id,
-            "encrypted_object_key": f"r2://safewatch/{recording_id}",
+            "encrypted_object_key": f"r2://thirdeye/{recording_id}",
             "dek_wrapped_b64": "fake==",
             "retain_until": retain_until,
             "deleted_at": None,

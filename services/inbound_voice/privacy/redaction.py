@@ -11,7 +11,7 @@ Each match is replaced with a categorical placeholder (`[CC]`, `[SSN]`, etc.)
 and recorded in a redactions list — the homeowner sees how many redactions
 happened (transparency) but never the raw redacted content (privacy).
 
-We deliberately do NOT redact names — the entire point of a SafeWatch
+We deliberately do NOT redact names — the entire point of a ThirdEye
 transcript is "the suspect said his name is Mike." Names belong.
 """
 

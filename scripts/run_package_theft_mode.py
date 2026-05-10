@@ -1,4 +1,4 @@
-"""Launch SafeWatch with package-theft optimized defaults.
+"""Launch ThirdEye with package-theft optimized defaults.
 
 This helper sets practical environment defaults so users can run a focused
 package-theft detector without hand-tuning dozens of flags.

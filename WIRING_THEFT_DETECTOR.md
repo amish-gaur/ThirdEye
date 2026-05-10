@@ -1,4 +1,4 @@
-# Wiring the Theft Detector → SafeWatch Action Router
+# Wiring the Theft Detector → ThirdEye Action Router
 
 > **Read this whole file before touching code.** It's the contract between
 > Amish's vision pipeline (theft detector + best-frame capture) and Aditya's

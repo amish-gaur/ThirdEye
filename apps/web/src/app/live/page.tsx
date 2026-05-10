@@ -1,23 +1,32 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { CameraTile } from "@/components/CameraTile";
-import { Aurora } from "@/components/magic/Aurora";
-import { getNodes } from "@/lib/api";
+import { ReadyPillar } from "@/components/ReadyPillar";
+import { cameraToNode, getNodes } from "@/lib/api";
+import { useCameras } from "@/lib/liveStore";
 import type { NodeSummary } from "@safewatch/api-types";
 
 export default function LivePage() {
   const params = useSearchParams();
   const initial = params.get("node");
-  const [nodes, setNodes] = useState<NodeSummary[]>([]);
+  const { cameras } = useCameras();
+  const [fallback, setFallback] = useState<NodeSummary[]>([]);
   const [active, setActive] = useState<string | null>(initial);
 
   useEffect(() => {
-    getNodes().then((ns) => {
-      setNodes(ns);
-      if (!active && ns.length) setActive(ns[0]!.node_id);
-    });
-  }, []);
+    if (cameras.length > 0) return;
+    getNodes().then(setFallback).catch(() => setFallback([]));
+  }, [cameras.length]);
+
+  const nodes: NodeSummary[] = useMemo(
+    () => (cameras.length > 0 ? cameras.map(cameraToNode) : fallback),
+    [cameras, fallback]
+  );
+
+  useEffect(() => {
+    if (!active && nodes.length) setActive(nodes[0]!.node_id);
+  }, [active, nodes]);
 
   const focus = nodes.find((n) => n.node_id === active);
 
@@ -32,14 +41,17 @@ export default function LivePage() {
         </h1>
         <p className="mt-2 max-w-[60ch] text-[14.5px] text-cream-50/65">
           {focus?.scene
-            ? `Streaming from the ${focus.scene} over LiveKit. WebRTC, sub-second latency.`
+            ? `Streaming from the ${focus.scene}. Frames stay on your device — the brain only sees structured event records.`
             : "Pick a node from the strip below."}
         </p>
+        <div className="mt-4">
+          <ReadyPillar variant="hero" />
+        </div>
       </header>
 
       {focus && (
         <div className="relative overflow-hidden rounded-3xl border border-maroon-300/15 ring-glow">
-          <CameraTile node={focus} height={560} />
+          <CameraTile node={focus} height={560} useWebcam />
           <div className="absolute bottom-5 right-5 flex gap-2">
             <button className="rounded-full border border-cream-50/40 px-4 py-2 text-[12.5px] text-cream-50 hover:bg-cream-50/10">
               Snapshot

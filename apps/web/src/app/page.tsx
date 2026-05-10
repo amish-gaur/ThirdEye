@@ -1,23 +1,64 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { ArrowUpRight, ShieldCheck, Radio } from "lucide-react";
 import { CameraTile } from "@/components/CameraTile";
+import { ReadyPillar } from "@/components/ReadyPillar";
 import { SeverityBadge } from "@safewatch/ui/web";
 import { Aurora } from "@/components/magic/Aurora";
 import { Spotlight } from "@/components/magic/Spotlight";
 import { ShimmerText } from "@/components/magic/ShimmerText";
-import { getEvents, getNodes } from "@/lib/api";
+import { cameraToNode, getEvents } from "@/lib/api";
+import { useCameras, useIncidents } from "@/lib/liveStore";
 import type { EventRecord, NodeSummary } from "@safewatch/api-types";
 
 export default function Dashboard() {
-  const [nodes, setNodes] = useState<NodeSummary[]>([]);
-  const [events, setEvents] = useState<EventRecord[]>([]);
+  const { cameras } = useCameras();
+  const { incidents } = useIncidents();
+  const [history, setHistory] = useState<EventRecord[]>([]);
 
+  // Backfill the timeline with whatever the legacy fixture endpoint
+  // returns so a freshly opened dashboard isn't empty before the SSE
+  // stream produces an event.
   useEffect(() => {
-    getNodes().then(setNodes);
-    getEvents().then(setEvents);
+    getEvents()
+      .then(setHistory)
+      .catch(() => setHistory([]));
   }, []);
+
+  const nodes: NodeSummary[] = useMemo(
+    () =>
+      cameras.length > 0
+        ? cameras.map(cameraToNode)
+        : history.length > 0
+        ? Array.from(
+            new Map(
+              history.map((e) => [
+                e.node_id,
+                {
+                  node_id: e.node_id,
+                  label: e.scene || e.node_id,
+                  online: true,
+                  last_seen: e.timestamp,
+                  scene: e.scene,
+                } as NodeSummary,
+              ])
+            ).values()
+          )
+        : [],
+    [cameras, history]
+  );
+
+  const events = useMemo(() => {
+    const seen = new Set<string>();
+    const merged: EventRecord[] = [];
+    for (const e of [...incidents, ...history]) {
+      if (seen.has(e.id)) continue;
+      seen.add(e.id);
+      merged.push(e);
+    }
+    return merged;
+  }, [incidents, history]);
 
   const active = events.find((e) => e.tier >= 3);
 
@@ -39,8 +80,13 @@ export default function Dashboard() {
             uploaded. The brain only sees structured event records.
           </p>
 
-          <div className="mt-8 flex flex-wrap items-center gap-2">
+          <div className="mt-8">
+            <ReadyPillar variant="hero" />
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center gap-2">
             <HeroStat label="Cameras online" value={`${nodes.filter((n) => n.online).length} / ${nodes.length}`} />
+            <HeroStat label="Live incidents" value={String(incidents.length)} />
             <HeroStat label="Events today" value={String(events.length)} />
             <HeroStat label="Frames uploaded" value="0" tone="strong" />
           </div>

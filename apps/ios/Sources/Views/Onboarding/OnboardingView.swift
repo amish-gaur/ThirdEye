@@ -2,12 +2,11 @@ import SwiftUI
 
 struct OnboardingView: View {
     @EnvironmentObject var auth: AuthStore
+    @EnvironmentObject var identity: IdentityStore
     @State private var step: Step = .welcome
-    @State private var firstPIN: String = ""
-    @State private var pinError: String? = nil
 
     enum Step: Hashable {
-        case welcome, permissions, faceScan, setPIN, confirmPIN
+        case welcome, identity, handoff, faceScan
     }
 
     var body: some View {
@@ -32,12 +31,35 @@ struct OnboardingView: View {
     @ViewBuilder
     private var content: some View {
         switch step {
-        case .welcome:    welcome
-        case .permissions: permissions
-        case .faceScan:   faceScan
-        case .setPIN:     setPIN
-        case .confirmPIN: confirmPIN
+        case .welcome:  welcome
+        case .identity: IdentityStep(onContinue: { step = .handoff })
+        case .handoff:  HandoffStep(onContinue: { step = .faceScan })
+        case .faceScan: faceScan
         }
+    }
+
+    private var faceScan: some View {
+        VStack(spacing: 22) {
+            EyeText(text: "Face scan", size: 32)
+            Text("FOLLOW THE ARROW · 4 ANGLES")
+                .font(.mono(10)).tracking(2)
+                .foregroundStyle(Hue.deep)
+            FaceScanView { completeOnboarding() }
+            Text("Visual only. Frames never leave the device.")
+                .font(.system(size: 12))
+                .foregroundStyle(Hue.deep.opacity(0.8))
+        }
+    }
+
+    /// Last step of the demo flow. Web has claimed the code (or the user
+    /// tapped "ENTER ANYWAY"), so we mark the device onboarded and unlocked
+    /// and drop straight into the home view. PIN/face/permissions are
+    /// reserved for a future build — `make run` wipes the app every time
+    /// so this fresh-start path is always what we want.
+    private func completeOnboarding() {
+        if !auth.hasPIN { auth.setPIN("0000") }
+        auth.unlocked = true
+        auth.onboarded = true
     }
 
     private var welcome: some View {
@@ -54,76 +76,7 @@ struct OnboardingView: View {
                 .foregroundStyle(Hue.deep)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 16)
-            primaryCTA("GET STARTED") { step = .permissions }
-        }
-    }
-
-    private var permissions: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            EyeText(text: "Access", size: 32)
-            Text("THIRD EYE NEEDS A FEW THINGS — ALL LOCAL.")
-                .font(.mono(10)).tracking(2)
-                .foregroundStyle(Hue.deep)
-
-            VStack(spacing: 10) {
-                permRow(icon: "camera.fill",         title: "Camera",        sub: "for the live feed")
-                permRow(icon: "mic.fill",            title: "Microphone",    sub: "for incident calls")
-                permRow(icon: "wifi",                title: "Local network", sub: "for LAN cameras")
-                permRow(icon: "bell.fill",           title: "Notifications", sub: "for tier alerts")
-            }
-
-            primaryCTA("ALLOW & CONTINUE") {
-                Task {
-                    _ = await Permissions.requestCamera()
-                    _ = await Permissions.requestMic()
-                    _ = await Permissions.requestNotifications()
-                    Permissions.nudgeLocalNetwork()
-                    await MainActor.run { step = .faceScan }
-                }
-            }
-        }
-    }
-
-    private var faceScan: some View {
-        VStack(spacing: 22) {
-            EyeText(text: "Face scan", size: 32)
-            Text("HOLD STILL · SCANNING")
-                .font(.mono(10)).tracking(2)
-                .foregroundStyle(Hue.deep)
-            FaceScanView { step = .setPIN }
-            Text("Stored locally. Frames never leave the device.")
-                .font(.system(size: 12))
-                .foregroundStyle(Hue.deep.opacity(0.8))
-        }
-    }
-
-    private var setPIN: some View {
-        PINPad(
-            title: "Set unlock PIN",
-            subtitle: "4 digits · used to enter the console",
-            length: 4
-        ) { value in
-            firstPIN = value
-            step = .confirmPIN
-        }
-    }
-
-    private var confirmPIN: some View {
-        PINPad(
-            title: "Confirm PIN",
-            subtitle: "Enter it once more",
-            length: 4,
-            error: pinError
-        ) { value in
-            if value == firstPIN {
-                auth.setPIN(value)
-                auth.unlocked = true
-                auth.onboarded = true
-            } else {
-                pinError = "Pins did not match. Try again."
-                firstPIN = ""
-                step = .setPIN
-            }
+            primaryCTA("GET STARTED") { step = .identity }
         }
     }
 
@@ -157,32 +110,11 @@ struct OnboardingView: View {
         .buttonStyle(.plain)
     }
 
-    private func permRow(icon: String, title: String, sub: String) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.system(size: 16, weight: .bold))
-                .foregroundStyle(Hue.red)
-                .frame(width: 28, height: 28)
-                .background(Circle().fill(Hue.cream))
-                .overlay(Circle().strokeBorder(Hue.ink, lineWidth: 2))
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.system(size: 14, weight: .semibold)).foregroundStyle(Hue.ink)
-                Text(sub).font(.mono(10)).foregroundStyle(Hue.deep.opacity(0.8))
-            }
-            Spacer()
-        }
-        .padding(.horizontal, 14).padding(.vertical, 10)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Hue.cream))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Hue.ink, lineWidth: 2))
-    }
-
 }
 
 private struct ProgressBar: View {
     let step: OnboardingView.Step
-    private let order: [OnboardingView.Step] = [
-        .welcome, .permissions, .faceScan, .setPIN, .confirmPIN
-    ]
+    private let order: [OnboardingView.Step] = [.welcome, .identity, .handoff, .faceScan]
     var idx: Int { order.firstIndex(of: step) ?? 0 }
 
     var body: some View {

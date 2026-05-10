@@ -306,7 +306,7 @@ def _build_qwen_prompt(event: dict[str, Any], orders: list[_Order]) -> str:
         "time_elapsed": event.get("time_elapsed"),
     }
     return (
-        "You are SafeWatch's package/order identifier. You will be shown recent "
+        "You are ThirdEye's package/order identifier. You will be shown recent "
         "frames from a delivery/theft clip and a list of possible orders. Match "
         "the visible package to the most likely order using visible cues such as "
         "box/bag size, shape, labels, brand text, color, and any event context. "

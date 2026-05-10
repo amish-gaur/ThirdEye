@@ -3,16 +3,31 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { SeverityBadge } from "@safewatch/ui/web";
 import { getEvents, suspectFrameUrl } from "@/lib/api";
+import { useIncidents } from "@/lib/liveStore";
 import { cn } from "@/lib/utils";
 import type { EventRecord } from "@safewatch/api-types";
 
 export default function TimelinePage() {
-  const [events, setEvents] = useState<EventRecord[]>([]);
+  const { incidents } = useIncidents();
+  const [history, setHistory] = useState<EventRecord[]>([]);
   const [tier, setTier] = useState<number | null>(null);
 
   useEffect(() => {
-    getEvents().then(setEvents);
+    getEvents().then(setHistory).catch(() => setHistory([]));
   }, []);
+
+  // Live SSE incidents on top, fixture history below; de-dupe by id so
+  // a server-side replay of the latest event doesn't render twice.
+  const events = useMemo(() => {
+    const seen = new Set<string>();
+    const merged: EventRecord[] = [];
+    for (const e of [...incidents, ...history]) {
+      if (seen.has(e.id)) continue;
+      seen.add(e.id);
+      merged.push(e);
+    }
+    return merged;
+  }, [incidents, history]);
 
   const filtered = useMemo(
     () => (tier ? events.filter((e) => e.tier === tier) : events),

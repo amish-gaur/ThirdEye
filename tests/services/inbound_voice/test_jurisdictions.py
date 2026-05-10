@@ -41,8 +41,8 @@ def test_disclosure_preambles_are_softer_in_one_party_states() -> None:
     info = jurisdiction_for_state("TX")
     long = disclosure_preamble(info)
     short = short_disclosure_preamble(info)
-    # Still mentions SafeWatch and possibility of recording
-    assert "SafeWatch" in long
+    # Still mentions ThirdEye and possibility of recording
+    assert "ThirdEye" in long
     assert "may be recorded" in long.lower()
     assert "consent" not in long.lower()  # No mandatory consent language
     assert "may be recorded" in short.lower()

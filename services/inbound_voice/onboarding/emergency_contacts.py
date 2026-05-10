@@ -1,4 +1,4 @@
-"""Emergency contacts: people SafeWatch may call on the homeowner's behalf.
+"""Emergency contacts: people ThirdEye may call on the homeowner's behalf.
 
 We can't legally (or ethically) auto-call someone's family member without
 that person's own consent — the homeowner can consent on their own behalf
@@ -6,7 +6,7 @@ but not for someone else. So:
 
 1. Homeowner adds a contact (name, phone, role).
 2. We send the contact a one-time SMS with a short consent token + link.
-3. Contact taps "yes, SafeWatch may call me about <homeowner name> in
+3. Contact taps "yes, ThirdEye may call me about <homeowner name> in
    emergencies" or just replies YES.
 4. We mark `consented_at`. Until then, that contact is NOT in the call fan-out.
 5. Either party can revoke at any time.

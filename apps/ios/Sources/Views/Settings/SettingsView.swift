@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject var cameras: CamerasStore
+    @EnvironmentObject var identity: IdentityStore
     @State private var toggles: [Bool] = [false, true, true, true]
     @State private var discovered: [DiscoveredCamera] = []
     @State private var scanning = false
@@ -18,6 +19,44 @@ struct SettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
             SectionHeader(title: "Settings", sub: "Routing · contacts · LAN cameras")
+
+            // Identity / web pairing
+            if let id = identity.identity {
+                Card(corner: 16) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 6) {
+                            Text("WEB CONSOLE")
+                                .font(.mono(10)).tracking(2)
+                                .foregroundStyle(Hue.deep)
+                            Spacer()
+                            Circle()
+                                .fill(id.isClaimed ? Color.green : Hue.gold)
+                                .frame(width: 8, height: 8)
+                                .overlay(Circle().strokeBorder(Hue.ink, lineWidth: 1.2))
+                            Text(id.isClaimed ? "LINKED" : "PENDING")
+                                .font(.mono(10)).tracking(1.4)
+                                .foregroundStyle(Hue.deep)
+                        }
+                        Text("\(id.name) · \(id.email)")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Hue.ink)
+                        if !id.isClaimed {
+                            HStack(spacing: 8) {
+                                Text("CODE")
+                                    .font(.mono(10)).tracking(2)
+                                    .foregroundStyle(Hue.deep)
+                                Text(id.code)
+                                    .font(.system(size: 18, weight: .black, design: .monospaced))
+                                    .tracking(4)
+                                    .foregroundStyle(Hue.ink)
+                            }
+                            .padding(.top, 2)
+                        }
+                    }
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
 
             // Backend URL editor
             Card(corner: 16) {

@@ -1,7 +1,9 @@
 "use client";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
+import { ReadyPillar } from "@/components/ReadyPillar";
+import { useIdentity } from "@/lib/identity";
 
 const items = [
   { href: "/", label: "Dashboard" },
@@ -14,6 +16,17 @@ const items = [
 
 export function Nav() {
   const pathname = usePathname();
+  const router = useRouter();
+  const { identity, signOut } = useIdentity();
+  const initials = identity
+    ? identity.name
+        .split(/\s+/)
+        .map((p) => p[0])
+        .filter(Boolean)
+        .slice(0, 2)
+        .join("")
+        .toUpperCase()
+    : null;
   return (
     <nav className="sticky top-0 z-30 border-b border-maroon-300/10 bg-maroon-950/70 backdrop-blur-xl">
       <div className="mx-auto flex max-w-[1280px] items-center gap-8 px-7 py-3.5">
@@ -21,7 +34,7 @@ export function Nav() {
           href="/"
           className="font-serif text-[22px] font-semibold tracking-tight text-cream-50"
         >
-          SafeWatch
+          ThirdEye
           <span className="ml-1 text-maroon-300">·</span>
         </Link>
 
@@ -46,10 +59,37 @@ export function Nav() {
           })}
         </div>
 
-        <span className="hidden sm:inline-flex items-center gap-1.5 rounded-full border border-maroon-300/15 bg-maroon-900/40 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-maroon-100">
-          <span className="h-1.5 w-1.5 rounded-full bg-maroon-200 animate-pulse-soft" />
-          local inference
-        </span>
+        <ReadyPillar variant="compact" />
+
+        {identity ? (
+          <div className="flex items-center gap-2">
+            <span
+              className="grid h-7 w-7 place-items-center rounded-full bg-cream-50 font-mono text-[11px] font-semibold text-maroon-900"
+              title={`${identity.name} · ${identity.email}`}
+            >
+              {initials}
+            </span>
+            <span className="hidden md:inline-block max-w-[180px] truncate text-[12.5px] text-cream-50/85">
+              {identity.name.split(/\s+/)[0]}
+            </span>
+            <button
+              onClick={() => {
+                signOut();
+                router.push("/login");
+              }}
+              className="rounded-full border border-maroon-300/30 px-3 py-1 font-mono text-[10px] uppercase tracking-[0.16em] text-cream-50/70 hover:bg-maroon-300/10"
+            >
+              Sign out
+            </button>
+          </div>
+        ) : (
+          <Link
+            href="/login"
+            className="rounded-full border border-maroon-300/30 px-4 py-1.5 text-[13px] text-cream-50 hover:bg-maroon-300/10"
+          >
+            Sign in
+          </Link>
+        )}
 
         <Link
           href="/onboarding"

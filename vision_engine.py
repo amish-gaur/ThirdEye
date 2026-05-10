@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Standalone launcher for the SafeWatch vision pipeline."""
+"""Standalone launcher for the ThirdEye vision pipeline."""
 
 from vision_pipeline.engine import main
 

@@ -26,7 +26,7 @@ from typing import Any
 # Prompt sent to the VLM (Qwen / Moondream). Tight, explicit, JSON-only.
 # ---------------------------------------------------------------------------
 
-VISION_LANGUAGE_PROMPT = """You are SafeWatch, a sharp-eyed home security classifier.
+VISION_LANGUAGE_PROMPT = """You are ThirdEye, a sharp-eyed home security classifier.
 You will be shown 1-3 RECENT FRAMES from the same camera (the most recent
 frame is last). Your job: describe the person and what they are doing
 specifically and confidently. Do NOT guess details that are not clearly

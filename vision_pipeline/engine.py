@@ -1543,19 +1543,26 @@ class VisionEngine:
                     self._throttle_display_loop(loop_started_at)
                     continue
 
+                # Build the annotated frame whether or not we show a window —
+                # the web UI pulls it via /media/live/preview.jpg, which the
+                # action_router serves out of MEDIA_DIR. Drawing once and
+                # reusing keeps the imshow path and the web preview in sync.
+                display = frame.copy()
+                if self.config.debug_overlay:
+                    with self.decision_lock:
+                        decision = self.latest_decision
+                    with self.state_lock:
+                        last_cls = self.last_classification
+                    _draw_overlay(
+                        display,
+                        config=self.config,
+                        decision=decision,
+                        last_classification=last_cls,
+                    )
+
+                self._write_live_preview(display)
+
                 if self.show_window:
-                    display = frame.copy()
-                    if self.config.debug_overlay:
-                        with self.decision_lock:
-                            decision = self.latest_decision
-                        with self.state_lock:
-                            last_cls = self.last_classification
-                        _draw_overlay(
-                            display,
-                            config=self.config,
-                            decision=decision,
-                            last_classification=last_cls,
-                        )
                     cv2.imshow("ThirdEye Vision Engine", display)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         self.run_event.clear()
@@ -2925,6 +2932,33 @@ class VisionEngine:
         remaining = DISPLAY_INTERVAL_SECONDS - elapsed
         if remaining > 0:
             time.sleep(remaining)
+
+    def _write_live_preview(self, frame_bgr: "np.ndarray") -> None:
+        """Persist the annotated frame to MEDIA_DIR/live/preview.jpg so the
+        web UI can render the same overlay (boxes + confidences) the engine
+        shows in its OpenCV window. Atomic via temp + rename so a partial
+        write never lands in the served path. Throttled to ~8 fps — the web
+        polls at the same rate, full motion isn't worth the disk churn."""
+        now = time.time()
+        last = getattr(self, "_live_preview_last", 0.0)
+        if now - last < 0.12:  # ~8 fps
+            return
+        try:
+            from pathlib import Path
+
+            preview_dir = Path(self.config.clip_output_dir) / "live"
+            preview_dir.mkdir(parents=True, exist_ok=True)
+            target = preview_dir / "preview.jpg"
+            tmp = preview_dir / "preview.jpg.tmp"
+            ok, encoded = cv2.imencode(".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 75])
+            if not ok:
+                return
+            tmp.write_bytes(bytes(encoded))
+            tmp.replace(target)
+            self._live_preview_last = now
+        except Exception:
+            # Disk hiccups shouldn't take down the vision loop. Fall through.
+            log.debug("live preview write failed", exc_info=True)
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -35,7 +35,7 @@
 	<key>NSCameraUsageDescription</key>
 	<string>Used for the live camera feed.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Reaches the local SafeWatch action_router and LAN cameras.</string>
+	<string>Reaches the local ThirdEye action_router and LAN cameras.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Used during active incident calls.</string>
 	<key>UILaunchScreen</key>

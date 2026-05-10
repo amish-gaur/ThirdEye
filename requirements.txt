@@ -1,4 +1,4 @@
-# SafeWatch — combined backend branch
+# ThirdEye — combined backend branch
 # Targets Python 3.11+. Includes action-router + vision-pipeline deps.
 
 # External APIs
@@ -14,7 +14,7 @@ python-dotenv>=1.0
 requests>=2.32
 websockets>=12.0   # phone-camera WebSocket ingest (used by FastAPI/uvicorn)
 qrcode>=7.4        # QR pairing UI (renders PNGs via Pillow)
-zeroconf>=0.131    # mDNS LAN camera discovery + safewatch_sensor announce
+zeroconf>=0.131    # mDNS LAN camera discovery + safewatch_sensor announce (module name retained for protocol compat)
 
 # Vision pipeline
 opencv-python>=4.10

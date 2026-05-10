@@ -14,7 +14,7 @@ from action_router.voice import place_call_say
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--to", default=CONFIG.homeowner_phone, help="E.164 phone number")
-    parser.add_argument("--text", default="This is a SafeWatch test call.")
+    parser.add_argument("--text", default="This is a ThirdEye test call.")
     parser.add_argument("--voice", default="alice")
     args = parser.parse_args()
 

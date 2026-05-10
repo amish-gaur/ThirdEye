@@ -86,7 +86,8 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence
 
 from ._trace import trace, trace_exception
 from .config import CONFIG, Config
@@ -455,16 +456,32 @@ def _tier_alert(event: Dict[str, Any], cfg: Config, result: ActionResult) -> Act
 
 
 def _tier_emergency(event: Dict[str, Any], cfg: Config, result: ActionResult) -> ActionResult:
+    # Kick off iMessage fan-out in a background thread BEFORE Claude + TTS run.
+    # iMessage is sequential per-recipient (Apple drops parallel AppleScript
+    # sends) and on a four-contact emergency was adding ~4-8s of dead time
+    # before the first phone could ring. iMessage doesn't need the Claude
+    # script or the ElevenLabs MP3 — its body comes from event metadata —
+    # so it can run fully in parallel with everything below. We join before
+    # returning so result.messages / result.errors are complete on exit.
+    # Thread safety: list.append / list.extend on result.* are atomic under
+    # CPython's GIL, and `event` / `cfg` are read-only on this path.
+    imsg_thread: Optional[threading.Thread] = None
+    if cfg.imessage_enabled:
+        imsg_thread = threading.Thread(
+            target=_fanout_imessage_safe,
+            args=(event, cfg, result),
+            kwargs={"attach_clip": cfg.imessage_attach_clip, "label": "emergency"},
+            daemon=True,
+            name="imsg-fanout-emergency",
+        )
+        imsg_thread.start()
+
     trace("NARRATION_BEGIN", level="BEGIN", tier=4, source="claude" if cfg.use_claude else "static_template")
     script = generate_script(event, cfg)
     result.script = script
     trace("SCRIPT", level="OK", chars=len(script), preview=script[:160])
     media_url = _try_synthesize(script, cfg, result, prefix="emergency_")
     trace("MEDIA_URL", level="STEP", url=media_url, fallback_will_use_say=media_url is None)
-    # Fan out iMessage in parallel with the calls. iMessage delivery is faster
-    # than the call ringing so the team has the clip on their phones the moment
-    # they pick up.
-    _fanout_imessage(event, cfg, result, attach_clip=cfg.imessage_attach_clip, label="emergency")
 
     # Build the call list: known slots first, then any extra neighbor numbers
     # from NEIGHBOR_PHONES (deduped on the raw E.164 string). The dedup is
@@ -490,7 +507,18 @@ def _tier_emergency(event: Dict[str, Any], cfg: Config, result: ActionResult) ->
     if not targets:
         result.errors.append("no emergency contacts configured")
         trace("CALLS_BEGIN", level="ERR", reason="no contacts configured")
+        if imsg_thread is not None:
+            imsg_thread.join()
         return result
+
+    # Resolve the keyframe to a Twilio-fetchable URL so each emergency contact
+    # gets the moment-of-theft photo via MMS alongside the voice call. Falls
+    # back to text-only SMS when the frame can't be served publicly (localhost
+    # PUBLIC_BASE_URL, missing file, dry-run fixtures, etc.) — the calls and
+    # iMessage attachment paths still fire either way.
+    frame_url = _resolve_frame_url(event, cfg)
+    sms_media: Optional[List[str]] = [frame_url] if frame_url else None
+    sms_body = _format_emergency_sms_body(event)
 
     trace(
         "CALLS_BEGIN",
@@ -498,30 +526,63 @@ def _tier_emergency(event: Dict[str, Any], cfg: Config, result: ActionResult) ->
         n=len(targets),
         targets=[f"{lbl}={num}" for lbl, num in targets],
         media_url=media_url,
+        frame_url=frame_url,
+        frame_attached=bool(sms_media),
     )
-    with ThreadPoolExecutor(max_workers=len(targets)) as pool:
+    # Same N targets get a parallel call AND a parallel SMS-with-frame, all
+    # submitted to one pool so the user-perceptible latency is max(call, sms),
+    # not call + sms.
+    tasks: List[tuple[str, str, str]] = []
+    for label, num in targets:
+        tasks.append((f"call_{label}", "call", num))
+        tasks.append((f"sms_{label}", "sms", num))
+
+    with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
         futures = {}
-        for label, num in targets:
-            trace("CALL_SUBMIT", level="STEP", to=num, label=label,
-                  kind="play" if media_url else "say")
-            futures[pool.submit(_place_call_safe, num, script, media_url, cfg)] = (label, num)
+        for action_label, kind, to in tasks:
+            if kind == "call":
+                trace("CALL_SUBMIT", level="STEP", to=to, label=action_label,
+                      kind="play" if media_url else "say")
+                fut = pool.submit(_place_call_safe, to, script, media_url, cfg)
+            else:
+                trace("SMS_FANOUT_SUBMIT", level="STEP", to=to, label=action_label,
+                      media_attached=bool(sms_media))
+                fut = pool.submit(_send_sms_safe, to, sms_body, cfg, sms_media)
+            futures[fut] = (action_label, kind, to)
         for fut in as_completed(futures):
-            label, num = futures[fut]
+            action_label, kind, to = futures[fut]
             try:
-                call = fut.result()
-                if call:
-                    result.calls.append(call)
-                    result.actions.append(f"call_{label}")
-                    trace("CALL_OK", level="OK", to=num, label=label, sid=call.sid,
-                          dry_run=call.dry_run)
+                outcome = fut.result()
+                if outcome is None:
+                    trace("EMERGENCY_NONE", level="WARN", to=to, label=action_label,
+                          kind=kind)
+                    continue
+                if kind == "call":
+                    result.calls.append(outcome)
+                    trace("CALL_OK", level="OK", to=to, label=action_label,
+                          sid=outcome.sid, dry_run=outcome.dry_run)
                 else:
-                    trace("CALL_NONE", level="WARN", to=num, label=label,
-                          reason="place_call_safe returned None")
+                    result.messages.append(outcome)
+                    trace("SMS_FANOUT_OK", level="OK", to=to, label=action_label,
+                          sid=outcome.sid, dry_run=outcome.dry_run,
+                          media_attached=bool(sms_media))
+                result.actions.append(action_label)
             except Exception as exc:
-                log.exception("Emergency call to %s failed", label)
-                result.errors.append(f"call_{label}: {exc}")
-                trace_exception("CALL_ERR", exc, to=num, label=label)
-    trace("CALLS_DONE", level="OK", placed=len(result.calls), errors=len(result.errors))
+                log.exception("Emergency %s failed", action_label)
+                result.errors.append(f"{action_label}: {exc}")
+                trace_exception("EMERGENCY_ERR", exc, to=to, label=action_label, kind=kind)
+    # Drain the iMessage fan-out before computing final counts and returning.
+    # Almost always a no-op in practice — the call/SMS pool runtime usually
+    # swallows the entire iMessage send window.
+    if imsg_thread is not None:
+        imsg_thread.join()
+    trace(
+        "CALLS_DONE",
+        level="OK",
+        placed=len(result.calls),
+        sms_sent=sum(1 for m in result.messages if m.sid != "imessage"),
+        errors=len(result.errors),
+    )
     return result
 
 
@@ -633,20 +694,75 @@ def _format_alert_sms_body(event: Dict[str, Any]) -> str:
     elapsed = event.get("time_elapsed", "just now")
     if desc:
         return (
-            f"SafeWatch ALERT: {summary} ({desc}) — {elapsed}. "
+            f"ThirdEye ALERT: {summary} ({desc}) — {elapsed}. "
             "Active alert; we are calling you now."
         )
     return (
-        f"SafeWatch ALERT: {summary} — {elapsed}. "
+        f"ThirdEye ALERT: {summary} — {elapsed}. "
         "Active alert; we are calling you now."
     )
 
 
-def _send_sms_safe(to: str, body: str, cfg: Config) -> Optional[SmsResult]:
-    trace("SMS_SUBMIT", level="STEP", to=to, chars=len(body))
+def _format_emergency_sms_body(event: Dict[str, Any]) -> str:
+    summary = event.get("one_line_summary", "Theft confirmed at your home.")
+    desc = event.get("suspect_description", "")
+    elapsed = event.get("time_elapsed", "just now")
+    if desc:
+        return (
+            f"ThirdEye EMERGENCY: {summary} ({desc}) — {elapsed}. "
+            "Calling you now."
+        )
+    return (
+        f"ThirdEye EMERGENCY: {summary} — {elapsed}. "
+        "Calling you now."
+    )
+
+
+def _resolve_frame_url(event: Dict[str, Any], cfg: Config) -> Optional[str]:
+    """Turn the local theft keyframe path into a Twilio-fetchable MMS URL.
+
+    The vision pipeline writes the moment-of-theft frame under MEDIA_DIR (see
+    ``vision_pipeline.theft_alert.save_best_frame``) and forwards the absolute
+    path as ``event["clip_path"]``. Twilio MMS needs a public HTTPS URL, so
+    we map that path back to the static-mounted ``/media/<rel>`` route on
+    ``PUBLIC_BASE_URL``.
+
+    Returns None when MMS isn't viable for this run (localhost base URL,
+    file outside MEDIA_DIR, missing file). Callers degrade to text-only SMS.
+    """
+    clip = event.get("clip_path")
+    if not clip:
+        return None
+    if not cfg.public_webhook_enabled():
+        # PUBLIC_BASE_URL is localhost / unset — Twilio can't reach it for MMS.
+        return None
+    try:
+        path = Path(str(clip)).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return None
+    if not path.exists():
+        return None
+    try:
+        media_root = cfg.media_dir.expanduser().resolve()
+        rel = path.relative_to(media_root)
+    except (ValueError, OSError):
+        # File lives outside MEDIA_DIR — the static mount won't serve it.
+        return None
+    # Posix-style separators so the URL works on Twilio regardless of host OS.
+    return cfg.media_url(rel.as_posix())
+
+
+def _send_sms_safe(
+    to: str,
+    body: str,
+    cfg: Config,
+    media_urls: Optional[Sequence[str]] = None,
+) -> Optional[SmsResult]:
+    trace("SMS_SUBMIT", level="STEP", to=to, chars=len(body),
+          media=list(media_urls) if media_urls else None)
     t0 = time.monotonic()
     try:
-        sms = send_sms(to, body, config=cfg)
+        sms = send_sms(to, body, media_urls=media_urls, config=cfg)
         trace("SMS_OK", level="OK", to=to, sid=sms.sid, dry_run=sms.dry_run,
               elapsed_s=round(time.monotonic() - t0, 3))
         return sms
@@ -761,6 +877,30 @@ def _imessage_recipient_union(cfg: Config) -> list[str]:
     return out
 
 
+def _fanout_imessage_safe(
+    event: Dict[str, Any],
+    cfg: Config,
+    result: ActionResult,
+    *,
+    attach_clip: bool,
+    label: str,
+) -> None:
+    """Background-thread-safe wrapper around `_fanout_imessage`.
+
+    `_tier_emergency` runs the fan-out in a daemon thread so it overlaps
+    with Claude + ElevenLabs + the call/SMS pool. A raw exception from the
+    threaded target would be silently swallowed by Python's threading, so
+    we convert any uncaught exception into a `result.errors` entry —
+    matching the receipt shape callers see when the sync path crashes.
+    """
+    try:
+        _fanout_imessage(event, cfg, result, attach_clip=attach_clip, label=label)
+    except Exception as exc:
+        log.exception("iMessage fan-out raised in background thread (label=%s)", label)
+        result.errors.append(f"imessage_fanout[{label}]: {exc}")
+        trace_exception("IMSG_THREAD_ERR", exc, label=label)
+
+
 def _fanout_imessage(
     event: Dict[str, Any],
     cfg: Config,
@@ -844,8 +984,8 @@ def _format_sms_body(event: Dict[str, Any]) -> str:
     desc = event.get("suspect_description", "")
     elapsed = event.get("time_elapsed", "just now")
     if desc:
-        return f"SafeWatch: {summary} ({desc}) — {elapsed}. No action needed."
-    return f"SafeWatch: {summary} — {elapsed}. No action needed."
+        return f"ThirdEye: {summary} ({desc}) — {elapsed}. No action needed."
+    return f"ThirdEye: {summary} — {elapsed}. No action needed."
 
 
 def _coerce_tier(value: Any) -> int:

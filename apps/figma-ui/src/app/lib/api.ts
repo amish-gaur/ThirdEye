@@ -111,3 +111,124 @@ export function streamUrlForToken(streamUrl: string): string {
   // natively, so this is the URL to drop in.
   return streamUrl;
 }
+
+// ─── Backend health ──────────────────────────────────────────────────────
+
+export type BackendHealth = {
+  status: string;
+  dry_run: boolean;
+  use_claude: boolean;
+  use_elevenlabs: boolean;
+  elevenlabs_play_enabled: boolean;
+  public_base_url?: string | null;
+  twilio_configured: boolean;
+};
+
+export async function fetchHealth(): Promise<BackendHealth | null> {
+  try {
+    const r = await fetch(`${BACKEND_URL}/health`, { cache: "no-store" });
+    if (!r.ok) return null;
+    return (await r.json()) as BackendHealth;
+  } catch {
+    return null;
+  }
+}
+
+// ─── Warmup (Qwen + YOLO readiness) ──────────────────────────────────────
+
+export type WarmupStatus = {
+  state: "cold" | "warming" | "ready";
+  elapsed_s: number;
+  running: number;
+  warming: number;
+  crashed: number;
+};
+
+export async function fetchWarmup(): Promise<WarmupStatus | null> {
+  try {
+    const r = await fetch(`${BACKEND_URL}/api/warmup`, { cache: "no-store" });
+    if (!r.ok) return null;
+    return (await r.json()) as WarmupStatus;
+  } catch {
+    return null;
+  }
+}
+
+// ─── Identity (phone → web handoff) ─────────────────────────────────────
+
+export type IdentitySession = {
+  session_id: string;
+  code: string;
+  name: string;
+  email: string;
+  device_id?: string | null;
+  status: "pending" | "claimed";
+  created_at: number;
+  claimed_at: number | null;
+};
+
+export async function fetchIdentityByCode(code: string): Promise<IdentitySession | null> {
+  const c = code.trim().toUpperCase();
+  if (!c) return null;
+  try {
+    const r = await fetch(`${BACKEND_URL}/api/identity/by-code/${encodeURIComponent(c)}`, {
+      cache: "no-store",
+    });
+    if (!r.ok) return null;
+    return (await r.json()) as IdentitySession;
+  } catch {
+    return null;
+  }
+}
+
+export async function claimIdentity(code: string): Promise<IdentitySession | null> {
+  const c = code.trim().toUpperCase();
+  if (!c) return null;
+  try {
+    const r = await fetch(
+      `${BACKEND_URL}/api/identity/by-code/${encodeURIComponent(c)}/claim`,
+      { method: "POST" }
+    );
+    if (!r.ok) return null;
+    return (await r.json()) as IdentitySession;
+  } catch {
+    return null;
+  }
+}
+
+// ─── LAN discovery + camera registry mutations ──────────────────────────
+
+export type DiscoveredCamera = {
+  name: string;
+  host: string;
+  port: number;
+  stream_url: string;
+  source_protocol?: string;
+};
+
+export async function discoverCameras(timeout = 3.0): Promise<DiscoveredCamera[]> {
+  try {
+    const r = await fetch(
+      `${BACKEND_URL}/api/discover?timeout=${encodeURIComponent(timeout)}`,
+      { cache: "no-store" }
+    );
+    if (!r.ok) return [];
+    return (await r.json()) as DiscoveredCamera[];
+  } catch {
+    return [];
+  }
+}
+
+export async function addCamera(name: string, stream_url: string): Promise<CameraEntry | null> {
+  try {
+    const r = await fetch(`${BACKEND_URL}/api/cameras/add`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, stream_url }),
+    });
+    if (!r.ok) return null;
+    return (await r.json()) as CameraEntry;
+  } catch {
+    return null;
+  }
+}

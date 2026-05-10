@@ -3,9 +3,15 @@ import SwiftUI
 
 // Mirrors apps/figma-ui/src/app/lib/api.ts.
 // Override at runtime via UserDefaults key "backend_url".
+// Default is generated at build time from .env (see Generated/BackendConfig.swift)
+// so an iPhone build dials the dev Mac without any manual setup.
 enum API {
     static var backendURL: String {
-        UserDefaults.standard.string(forKey: "backend_url") ?? "http://127.0.0.1:8001"
+        if let override = UserDefaults.standard.string(forKey: "backend_url"),
+           !override.trimmingCharacters(in: .whitespaces).isEmpty {
+            return override
+        }
+        return BackendConfig.defaultURL
     }
 }
 

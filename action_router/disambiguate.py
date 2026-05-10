@@ -106,7 +106,7 @@ def send_ask_sms(
     if not top:
         return None
     lines = [
-        "SafeWatch detected a possible package theft.",
+        "ThirdEye detected a possible package theft.",
         "Which order was it? Reply with the number, or N if none.",
     ]
     for i, c in enumerate(top, start=1):
@@ -137,7 +137,7 @@ def send_undo_sms(
         return None
     window = cfg.return_undo_window_seconds
     body = (
-        f"SafeWatch filed an Amazon return for {order_title}. "
+        f"ThirdEye filed an Amazon return for {order_title}. "
         f"Reply STOP within {window}s to cancel."
     )
     sms = send_sms(cfg.homeowner_phone, body, config=cfg)
@@ -162,7 +162,7 @@ def send_evidence_only_sms(
     cfg = config or CONFIG
     if not cfg.homeowner_phone:
         return None
-    body = f"SafeWatch: {summary} — couldn't match an order automatically."
+    body = f"ThirdEye: {summary} — couldn't match an order automatically."
     media = [clip_url] if clip_url else None
     return send_sms(cfg.homeowner_phone, body, media_urls=media, config=cfg)
 

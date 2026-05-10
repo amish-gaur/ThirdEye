@@ -1,6 +1,6 @@
 """US-state recording-consent law lookup + disclosure preambles.
 
-Recording laws differ by state. SafeWatch records both inbound and outbound
+Recording laws differ by state. ThirdEye records both inbound and outbound
 calls. In **two-party (all-party) consent** states, every party must be
 notified before recording — we must play a disclosure preamble at the start
 of every call where any party is in such a state. In **one-party consent**
@@ -106,18 +106,18 @@ def disclosure_preamble(info: JurisdictionInfo) -> str:
 
     We always play *some* disclosure — even in one-party states — because it
     builds trust. Two-party states get the explicit "this call may be
-    recorded" wording; one-party states get a softer "SafeWatch is on this
+    recorded" wording; one-party states get a softer "ThirdEye is on this
     line" mention.
     """
     if info.is_two_party:
         return (
-            "This is SafeWatch, a home security service. "
+            "This is ThirdEye, a home security service. "
             "This call is being recorded for safety and quality. "
             "By staying on the line you consent to being recorded. "
             "If you do not consent, please hang up now."
         )
     return (
-        "This is SafeWatch, a home security service. "
+        "This is ThirdEye, a home security service. "
         "This call may be recorded for safety."
     )
 
@@ -126,8 +126,8 @@ def short_disclosure_preamble(info: JurisdictionInfo) -> str:
     """Compressed version for situations where a long preamble is hostile
     (e.g. immediate emergency tier-4 callouts)."""
     if info.is_two_party:
-        return "SafeWatch on the line. This call is recorded; staying on the line is your consent."
-    return "SafeWatch on the line. This call may be recorded."
+        return "ThirdEye on the line. This call is recorded; staying on the line is your consent."
+    return "ThirdEye on the line. This call may be recorded."
 
 
 # ---- internal ---------------------------------------------------------------

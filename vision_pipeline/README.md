@@ -1,4 +1,4 @@
-# SafeWatch — Vision Pipeline (Person 1)
+# ThirdEye — Vision Pipeline (Person 1)
 
 YOLO triggers on `person`, Qwen2-VL classifies severity, and the pipeline emits the exact JSON the action router consumes at `/event`.
 

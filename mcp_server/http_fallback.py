@@ -1,4 +1,4 @@
-"""FastAPI HTTP transport for the SafeWatch search backend.
+"""FastAPI HTTP transport for the ThirdEye search backend.
 
 Same logic as the MCP tools (`SafeWatchTools`), exposed over HTTP so a
 plain `curl` from the demo laptop still works if Claude / wifi dies.
@@ -27,7 +27,7 @@ from vision_pipeline.track_store import TrackStore
 
 
 def build_app(tools: SafeWatchTools) -> FastAPI:
-    app = FastAPI(title="SafeWatch HTTP fallback")
+    app = FastAPI(title="ThirdEye HTTP fallback")
 
     @app.get("/cameras")
     def cameras() -> list[dict[str, Any]]:

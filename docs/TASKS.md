@@ -1,4 +1,4 @@
-# ThirdEye / SafeWatch — Remaining Action Items
+# ThirdEye — Remaining Action Items
 
 Owners: **Aditya, Amish, Rishab.**
 
@@ -13,7 +13,7 @@ This doc is the **ownership contract**. Each owner expands their section into a 
 Branches: `lane/phone-infra`, `lane/mobile-ux`. See `docs/PLAN_LANE_PHONE.md` and `docs/PLAN_LANE_MOBILE.md` for branch-scoped plans.
 
 ### 1. Phone infrastructure
-- Inbound call handling: homeowner dials the SafeWatch number to query / acknowledge / cancel an event.
+- Inbound call handling: homeowner dials the ThirdEye number to query / acknowledge / cancel an event.
 - Stable Twilio webhook routing, call-state machine, retry + busy-line fallback.
 - Coordinates with Rishab's outbound concurrent calling so inbound and outbound legs never collide.
 

@@ -21,7 +21,10 @@ struct LockView: View {
                     Text("HOLD STILL · SCANNING")
                         .font(.mono(11)).tracking(2.5)
                         .foregroundStyle(Hue.deep)
-                    FaceScanView(duration: 1.8) {
+                    // Re-unlock scan: shorter than first-run enrollment (one
+                    // pose's worth) — just enough to feel like a Face ID hit
+                    // before the PIN screen takes over.
+                    FaceScanView(perPose: 0.6) {
                         // Face scan succeeds visually; we still gate on the PIN.
                         withAnimation(.easeOut(duration: 0.35)) { phase = .pin }
                     }
