@@ -351,6 +351,44 @@ class FaceFilter:
         suppress = all(v.is_known for v in verdicts)
         return suppress, verdicts
 
+    def verdict_per_box(
+        self,
+        frame_bgr: np.ndarray,
+        person_boxes: list[Box],
+    ) -> list[PersonVerdict]:
+        """Like :meth:`classify_persons` but aligned 1:1 with the input list.
+
+        ``classify_persons`` dedups overlapping YOLO detections and returns
+        one verdict per logical person, which is the right semantics for the
+        suppression decision. The overlay needs the opposite — every input
+        box should get a verdict so we can stamp the matched name onto each
+        bounding box. We achieve that here by deduping internally, embedding
+        once per unique person, then projecting each input box back to its
+        representative verdict via IoU.
+        """
+        if not person_boxes:
+            return []
+        deduped = _dedup_overlapping_boxes(list(person_boxes), PERSON_BOX_DEDUP_IOU)
+        if not deduped:
+            return []
+        faces = self._embedder.detect_and_embed(frame_bgr)
+        deduped_verdicts: list[tuple[Box, PersonVerdict]] = []
+        for box in deduped:
+            face = _best_face_for_box(faces, box)
+            deduped_verdicts.append((box, self._verdict_for_face(face)))
+
+        out: list[PersonVerdict] = []
+        for input_box in person_boxes:
+            best_v: PersonVerdict | None = None
+            best_iou = -1.0
+            for d_box, v in deduped_verdicts:
+                iou = _box_iou(input_box, d_box)
+                if iou > best_iou:
+                    best_iou = iou
+                    best_v = v
+            out.append(best_v if best_v is not None else PersonVerdict(None, 0.0, "no_face"))
+        return out
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
@@ -442,7 +480,16 @@ class FaceFilter:
 
 
 def load_database(path: str | Path) -> list[_KnownPerson]:
-    """Read the JSON face DB; returns an empty list if missing or empty."""
+    """Read the JSON face DB; returns an empty list if missing or empty.
+
+    Accepts BOTH schemas so the engine works whether the file came from
+    `scripts.face_setup` (production: ``{"people": [{"name", "embeddings"}]}``)
+    or `scripts/face_id_demo.py enroll` (demo: ``{"entries": [{"name",
+    "embedding"}]}``). The two paths intentionally have different filenames
+    so we don't blur the architectural separation, but at LOAD time we
+    accept whichever shape the caller pointed at — that lets a single
+    pulled checkout work without a manual conversion step.
+    """
     p = Path(path)
     if not p.exists():
         return []
@@ -451,23 +498,56 @@ def load_database(path: str | Path) -> list[_KnownPerson]:
     except json.JSONDecodeError as exc:
         log.warning("Face DB %s is not valid JSON: %s", p, exc)
         return []
-    people_raw = raw.get("people", []) if isinstance(raw, dict) else []
-    out: list[_KnownPerson] = []
-    for entry in people_raw:
-        name = str(entry.get("name", "")).strip()
-        embeddings_raw = entry.get("embeddings", [])
-        if not name or not embeddings_raw:
-            continue
-        try:
-            arr = np.asarray(embeddings_raw, dtype=np.float32)
-        except (TypeError, ValueError):
-            log.warning("Skipping malformed embeddings for %r in %s", name, p)
-            continue
-        if arr.ndim != 2 or arr.shape[0] == 0:
-            continue
-        arr = _l2_normalize(arr)
-        out.append(_KnownPerson(name=name, embeddings=arr))
-    return out
+    if not isinstance(raw, dict):
+        return []
+
+    # Production schema first.
+    if "people" in raw:
+        people_raw = raw.get("people", [])
+        out: list[_KnownPerson] = []
+        for entry in people_raw:
+            name = str(entry.get("name", "")).strip()
+            embeddings_raw = entry.get("embeddings", [])
+            if not name or not embeddings_raw:
+                continue
+            try:
+                arr = np.asarray(embeddings_raw, dtype=np.float32)
+            except (TypeError, ValueError):
+                log.warning("Skipping malformed embeddings for %r in %s", name, p)
+                continue
+            if arr.ndim != 2 or arr.shape[0] == 0:
+                continue
+            arr = _l2_normalize(arr)
+            out.append(_KnownPerson(name=name, embeddings=arr))
+        return out
+
+    # Demo schema (face_id_demo.py): flat list of {name, embedding} entries.
+    # Group by name so the live filter sees one _KnownPerson per identity
+    # with all that person's embeddings stacked (which is how match scoring
+    # works — best-of-K against a single 2D array per person).
+    if "entries" in raw:
+        groups: dict[str, list[list[float]]] = {}
+        for entry in raw.get("entries", []):
+            name = str(entry.get("name", "")).strip()
+            emb = entry.get("embedding")
+            if not name or not emb:
+                continue
+            groups.setdefault(name, []).append(list(emb))
+        out = []
+        for name, embs in groups.items():
+            try:
+                arr = np.asarray(embs, dtype=np.float32)
+            except (TypeError, ValueError):
+                log.warning("Skipping malformed demo embeddings for %r in %s", name, p)
+                continue
+            if arr.ndim != 2 or arr.shape[0] == 0:
+                continue
+            arr = _l2_normalize(arr)
+            out.append(_KnownPerson(name=name, embeddings=arr))
+        log.info("Loaded face DB %s in demo-gallery schema (%d people)", p, len(out))
+        return out
+
+    return []
 
 
 def save_database(path: str | Path, people: dict[str, list[np.ndarray]]) -> None:

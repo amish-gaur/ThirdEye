@@ -158,6 +158,12 @@ class BehaviorDecision:
     package_anchor_label: str | None = None
     package_anchor_box: tuple[float, float, float, float] | None = None
     near_miss: bool = False  # for failure-artifact saving
+    # Aligned 1:1 with `person_boxes` when the face filter is enabled. Each
+    # entry says "is this person known, and how confident are we?" — used by
+    # the overlay to render `aditya 0.92` next to the green box, and by the
+    # processing loop to suppress theft emits when every detected person is
+    # enrolled. Empty list when the filter is off or no faces were detected.
+    face_verdicts: list[Any] = field(default_factory=list)
 
 
 @dataclass
@@ -628,6 +634,10 @@ _TIER_COLORS = {
 }
 _CARRYABLE_BOX_COLOR = (255, 80, 220)
 _CARDBOARD_BOX_COLOR = (255, 0, 255)
+# Bright cyan reserved for face-filter "known" person boxes — visually
+# distinct from the default green so the operator instantly sees that the
+# subject is enrolled and theft alerts are being suppressed for them.
+_KNOWN_PERSON_BOX_COLOR = (255, 220, 0)
 
 
 # Person threshold matches the confidence floor the theft tracker would
@@ -655,7 +665,13 @@ def _draw_overlay(
     cand_person_box = candidate.last_person_box if candidate else None
     cand_carryable_box = candidate.last_carryable_box if candidate else None
 
-    def _draw(det: Detection, color: tuple[int, int, int], thickness: int) -> None:
+    def _draw(
+        det: Detection,
+        color: tuple[int, int, int],
+        thickness: int,
+        *,
+        name_prefix: str | None = None,
+    ) -> None:
         x1, y1, x2, y2 = (int(round(v)) for v in det.box)
         x1 = min(max(0, x1), max(0, w - 1))
         x2 = min(max(0, x2), max(0, w - 1))
@@ -666,8 +682,14 @@ def _draw_overlay(
         cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), color, thickness)
         # Confidence chip in the top-left of the box. Filled rectangle with
         # the box's color, tight black text on top — black contrasts well
-        # against the bright green / magenta / pink chip backgrounds.
-        label = f"{det.confidence:.2f}"
+        # against the bright green / magenta / pink chip backgrounds. When
+        # the face filter recognizes a person, prepend the matched name so
+        # the operator can confirm at a glance that suppression is active.
+        label = (
+            f"{name_prefix} {det.confidence:.2f}"
+            if name_prefix
+            else f"{det.confidence:.2f}"
+        )
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
         chip_w = tw + 8
         chip_h = th + 6
@@ -692,11 +714,27 @@ def _draw_overlay(
             cv2.LINE_AA,
         )
 
-    for det in decision.person_boxes:
+    for idx, det in enumerate(decision.person_boxes):
         if det.confidence < _OVERLAY_MIN_CONFIDENCE:
             continue
         is_candidate = cand_person_box is not None and _box_iou(det.box, cand_person_box) > 0.3
-        _draw(det, (0, 255, 0), 3 if is_candidate else 2)
+        # Look up the matching face verdict (aligned 1:1 with person_boxes
+        # when the face filter is enabled). Knowns get a brighter green +
+        # name-prefixed chip so suppression is visually obvious during demo.
+        verdict = (
+            decision.face_verdicts[idx]
+            if idx < len(decision.face_verdicts)
+            else None
+        )
+        if verdict is not None and verdict.is_known:
+            _draw(
+                det,
+                _KNOWN_PERSON_BOX_COLOR,
+                3 if is_candidate else 2,
+                name_prefix=verdict.name,
+            )
+        else:
+            _draw(det, (0, 255, 0), 3 if is_candidate else 2)
 
     for det in decision.carryable_boxes:
         is_cardboard = det.label.strip().lower() == "cardboard box"
@@ -1076,6 +1114,30 @@ class VisionEngine:
             self.config.save_failure_artifacts,
         )
 
+    def _resolve_face_db_path(self, config: Config) -> str:
+        """Return the gallery file we should actually load.
+
+        Prefer the configured FACE_DB_PATH (typically the production
+        family_faces/embeddings.json that scripts.face_setup writes). If
+        that file is missing or empty, fall back to the committed demo
+        gallery at face_demo/gallery.json — that's the file Aditya's
+        face_id_demo.py enroll command appends to and pushes to git, so
+        any checkout where the team has been demoing has it pre-populated.
+        load_database() handles either schema.
+        """
+        configured = Path(config.face_db_path)
+        if configured.exists() and configured.stat().st_size > 0:
+            return str(configured)
+        demo = Path("face_demo/gallery.json")
+        if demo.exists() and demo.stat().st_size > 0:
+            log.info(
+                "FACE_DB_PATH=%s missing/empty; falling back to demo gallery %s",
+                configured,
+                demo,
+            )
+            return str(demo)
+        return str(configured)
+
     def _init_face_filter(self, config: Config) -> "FaceFilter | None":
         """Build the family-face exclusion layer if FACE_FILTER_ENABLED=true.
 
@@ -1088,13 +1150,14 @@ class VisionEngine:
         if not config.face_filter_enabled:
             return None
         from .face_filter import InsightFaceEmbedder
+        db_path = self._resolve_face_db_path(config)
         try:
             embedder = InsightFaceEmbedder(
                 model_name=config.face_model_name,
                 apply_clahe=config.face_clahe_enabled,
             )
             face_filter = FaceFilter(
-                db_path=config.face_db_path,
+                db_path=db_path,
                 similarity_threshold=config.face_similarity_threshold,
                 min_face_pixels=config.face_min_pixels,
                 min_det_score=config.face_min_det_score,
@@ -1113,11 +1176,17 @@ class VisionEngine:
         names = face_filter.enrolled_names
         log.info(
             "Face filter enabled: db=%s enrolled=%d (%s) threshold=%.2f",
-            config.face_db_path,
+            db_path,
             len(names),
             ", ".join(names) if names else "—",
             config.face_similarity_threshold,
         )
+        if not names:
+            log.warning(
+                "Face filter is enabled but the DB is empty — the engine will "
+                "treat every person as unknown and never suppress. Verify "
+                "FACE_DB_PATH or run scripts.face_setup / scripts/face_id_demo.py enroll.",
+            )
         return face_filter
 
     @staticmethod
@@ -1383,8 +1452,6 @@ class VisionEngine:
                 feet_motion_present=feet_motion,
             )
             decision = self._behavior_from_theft(theft_decision, persons, carryables)
-            with self.decision_lock:
-                self.latest_decision = decision
 
             if self.config.debug_detections:
                 log.info(
@@ -1396,37 +1463,58 @@ class VisionEngine:
                     [(d.label, round(d.confidence, 2)) for d in carryables],
                 )
 
-            should_fire = theft_decision.should_emit
-            if should_fire and self.face_filter is not None and persons:
-                # Face-filter gate: if every YOLO person resolves to a known
-                # enrolled face, suppress the alert. Failure modes are
-                # fail-open by design — unknown / no_face / face_too_small
-                # all let the alert through, so a stranger walking in front
-                # of the camera at a bad angle never gets silently dropped.
+            # Face filter runs EVERY frame with persons (not just when about
+            # to fire) so the overlay can stamp `aditya 0.92` on the bounding
+            # box continuously — that's the visual proof the suppression
+            # logic is alive. We compute per-detection verdicts (aligned 1:1
+            # with `persons`) so the overlay renderer can index by position.
+            face_verdicts: list[Any] = []
+            if self.face_filter is not None and persons:
                 try:
                     person_boxes = [d.box for d in persons]
-                    suppress, verdicts = self.face_filter.all_known(
-                        frame, person_boxes
-                    )
+                    face_verdicts = self.face_filter.verdict_per_box(frame, person_boxes)
                 except Exception as exc:
-                    log.warning("Face filter raised; not suppressing: %s", exc)
-                    suppress = False
-                    verdicts = []
-                if suppress:
-                    names = sorted({v.name for v in verdicts if v.name})
+                    log.warning("Face filter raised; per-box verdicts skipped: %s", exc)
+                    face_verdicts = []
+            decision = BehaviorDecision(
+                state=decision.state,
+                cues=decision.cues,
+                should_classify=decision.should_classify,
+                suppression_active=decision.suppression_active,
+                last_emitted_at=decision.last_emitted_at,
+                candidate=decision.candidate,
+                person_boxes=decision.person_boxes,
+                carryable_boxes=decision.carryable_boxes,
+                package_anchor_label=decision.package_anchor_label,
+                package_anchor_box=decision.package_anchor_box,
+                near_miss=decision.near_miss,
+                face_verdicts=face_verdicts,
+            )
+            with self.decision_lock:
+                self.latest_decision = decision
+
+            should_fire = theft_decision.should_emit
+            if should_fire and face_verdicts:
+                # Suppress only when EVERY visible person matched a known
+                # enrolled identity. Fail-open on no_face / face_too_small /
+                # low_quality / extreme_yaw so a stranger at a bad angle
+                # never gets silently whitelisted.
+                known = [v for v in face_verdicts if v.is_known]
+                if known and len(known) == len(face_verdicts):
+                    names = sorted({v.name for v in known})
                     log.info(
                         "Face filter SUPPRESS: every visible person matched "
                         "enrolled identity (%s); skipping theft emit %s",
-                        ", ".join(names) or "—",
+                        ", ".join(names),
                         self._active_incident_id,
                     )
                     should_fire = False
-                elif verdicts:
+                else:
                     log.info(
-                        "Face filter PASS: %s",
+                        "Face filter PASS (alert allowed): %s",
                         ", ".join(
                             f"{v.name or v.reason}({v.similarity:.2f})"
-                            for v in verdicts
+                            for v in face_verdicts
                         ),
                     )
             if should_fire and self._should_suppress_duplicate_theft_emit():
