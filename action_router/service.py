@@ -1,13 +1,16 @@
 """FastAPI service: receives event JSON from the vision pipeline, runs the
-router, and serves synthesized MP3s for Twilio to fetch."""
+router, and serves synthesized MP3s + uploaded incident frames for Twilio
+and iMessage to fetch."""
 
 from __future__ import annotations
 
 import logging
+import re
+import uuid
 from typing import Any, Dict
 from urllib.parse import parse_qs
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -50,6 +53,39 @@ def create_app() -> FastAPI:
             "public_base_url": CONFIG.public_base_url,
             "twilio_configured": bool(CONFIG.twilio_account_sid),
         }
+
+    _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]")
+
+    @app.post("/upload")
+    async def upload_frame(file: UploadFile = File(...)) -> JSONResponse:
+        """Save an incident frame (or any blob) to MEDIA_DIR and return its
+        absolute path on this machine plus the public URL.
+
+        Two callers in the cross-Mac demo setup:
+        * Vision pipeline (Amish's Mac) uploads the best frame of a
+          confirmed theft so the iMessage attachment fires from the host
+          Mac (Aditya's) where Messages.app is signed in.
+        * Vision pipeline can also upload short clips (mp4) the same way;
+          the returned `path` is what `clip_path` should be set to in the
+          subsequent /event POST so `_fanout_imessage` finds the file
+          locally on this Mac.
+
+        Filename is sanitized + prefixed with a random hex segment to
+        prevent collisions and traversal."""
+        original = file.filename or "frame.bin"
+        original = original.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        safe = _SAFE_FILENAME.sub("_", original)[:80] or "frame.bin"
+        unique = f"{uuid.uuid4().hex[:8]}_{safe}"
+        out = CONFIG.ensure_media_dir() / unique
+        contents = await file.read()
+        out.write_bytes(contents)
+        log.info("upload saved %s (%d bytes)", out, len(contents))
+        return JSONResponse({
+            "path": str(out.resolve()),
+            "url": CONFIG.media_url(unique),
+            "size": len(contents),
+            "filename": unique,
+        })
 
     @app.post("/event")
     async def receive_event(request: Request) -> JSONResponse:
