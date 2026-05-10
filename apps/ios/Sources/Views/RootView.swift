@@ -1,139 +1,110 @@
 import SwiftUI
 
-struct RootView: View {
-    @AppStorage("onboarded") private var onboarded: Bool = false
+// 4-tab phone-friendly subset of the web NAV array. Edge + Ask were dropped
+// because they were placeholder-only on web (random progress bars / canned
+// answer) and only added clutter on a small screen.
+enum AppTab: String, CaseIterable, Identifiable {
+    case dashboard, live, timeline, settings
+    var id: String { rawValue }
 
-    var body: some View {
-        if onboarded {
-            HomeShell(onReset: { onboarded = false })
-        } else {
-            OnboardingView(done: Binding(
-                get: { onboarded },
-                set: { onboarded = $0 }
-            ))
+    var label: String {
+        switch self {
+        case .dashboard: return "Home"
+        case .live:      return "Live"
+        case .timeline:  return "Events"
+        case .settings:  return "Settings"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .dashboard: return "waveform.path.ecg"
+        case .live:      return "dot.radiowaves.left.and.right"
+        case .timeline:  return "bell"
+        case .settings:  return "gearshape"
         }
     }
 }
 
-private struct HomeShell: View {
-    let onReset: () -> Void
-    @State private var activeIncident: Incident? = nil
-    @State private var showingIncident = false
-    @State private var resetOnboarding = false
-    @State private var tab: Tab = .dashboard
-
-    enum Tab: Hashable { case dashboard, timeline, settings }
+struct RootView: View {
+    @State private var tab: AppTab = .dashboard
+    @State private var loading = true
+    @StateObject private var incidents = IncidentStream()
+    @StateObject private var cameras = CamerasStore()
+    @StateObject private var auth = AuthStore()
 
     var body: some View {
-        ZStack(alignment: .top) {
-            ZStack {
-                switch tab {
-                case .dashboard:
-                    ZStack {
-                        DashboardView(activeIncident: $activeIncident, cameras: CameraNode.mockMesh)
-                        VStack {
-                            Spacer()
-                            DemoFireButton {
-                                withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
-                                    activeIncident = Incident.mockActive
-                                }
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                                    showingIncident = true
-                                }
-                            }
-                            .padding(.bottom, 92)
-                            .padding(.horizontal, 20)
-                        }
+        Group {
+            if !auth.onboarded {
+                OnboardingView()
+            } else if !auth.unlocked {
+                LockView()
+            } else {
+                main
+            }
+        }
+        .environmentObject(auth)
+    }
+
+    private var main: some View {
+        ZStack {
+            Hue.cream.ignoresSafeArea()
+            AmbientBg().opacity(0.6)
+
+            // Decorative retro circles — pulled mostly off-screen and dimmed
+            // so they read as background tint, not foreground objects.
+            Circle()
+                .fill(Hue.gold.opacity(0.35))
+                .overlay(Circle().strokeBorder(Hue.ink.opacity(0.25), lineWidth: 2))
+                .frame(width: 260, height: 260)
+                .offset(x: 200, y: -260)
+            Circle()
+                .fill(Hue.orange.opacity(0.18))
+                .overlay(Circle().strokeBorder(Hue.ink.opacity(0.20), lineWidth: 2))
+                .frame(width: 300, height: 300)
+                .offset(x: -210, y: 380)
+
+            VStack(spacing: 0) {
+                TopBar(tab: $tab)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 6)
+
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 24) {
+                        content
+                        AppFooter()
                     }
-                case .timeline:
-                    TimelineView()
-                case .settings:
-                    SettingsView(resetOnboarding: $resetOnboarding)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 18)
+                    .padding(.bottom, 32)
                 }
             }
-            .padding(.top, 56) // room for top bar
 
-            SafeWatchTopBar()
-
-            VStack { Spacer(); TabBar(tab: $tab) }
-        }
-        .fullScreenCover(isPresented: $showingIncident) {
-            if let incident = activeIncident {
-                IncidentView(
-                    incident: incident,
-                    onDispatch:    { showingIncident = false },
-                    onAcknowledge: { showingIncident = false },
-                    onStandDown: {
-                        showingIncident = false
-                        withAnimation { activeIncident = nil }
-                    }
-                )
+            if loading {
+                RobberLoader { withAnimation(.easeOut(duration: 0.35)) { loading = false } }
+                    .transition(.opacity)
+                    .zIndex(50)
             }
         }
-        .onChange(of: resetOnboarding) { _, newValue in
-            if newValue { onReset() }
+        .environmentObject(incidents)
+        .environmentObject(cameras)
+        .onAppear {
+            incidents.start()
+            cameras.start()
+        }
+        .onDisappear {
+            incidents.stop()
+            cameras.stop()
         }
     }
-}
 
-private struct TabBar: View {
-    @Binding var tab: HomeShell.Tab
-
-    var body: some View {
-        HStack(spacing: 0) {
-            tabButton(.dashboard, label: "Home", icon: "house.fill")
-            tabButton(.timeline,  label: "Timeline", icon: "clock.arrow.circlepath")
-            tabButton(.settings,  label: "Settings", icon: "gearshape.fill")
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Theme.surface)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(Theme.border, lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.08), radius: 30, y: 12)
-        .padding(.horizontal, 22)
-        .padding(.bottom, 14)
-    }
-
-    private func tabButton(_ t: HomeShell.Tab, label: String, icon: String) -> some View {
-        Button {
-            withAnimation(.easeInOut(duration: 0.2)) { tab = t }
-        } label: {
-            VStack(spacing: 3) {
-                Image(systemName: icon)
-                    .font(.system(size: 18, weight: .semibold))
-                Text(label)
-                    .font(.system(size: 10, weight: .bold))
-            }
-            .foregroundStyle(tab == t ? Theme.text : Theme.textMuted)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
-        }
-    }
-}
-
-private struct DemoFireButton: View {
-    let action: () -> Void
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                Image(systemName: "bolt.fill")
-                Text("Simulate Tier 3 alert")
-                    .font(.system(size: 16, weight: .bold))
-            }
-            .foregroundStyle(Theme.primaryFg)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Theme.primary)
-            )
-            .shadow(color: .black.opacity(0.15), radius: 18, x: 0, y: 8)
+    @ViewBuilder
+    private var content: some View {
+        switch tab {
+        case .dashboard: Dashboard()
+        case .live:      LiveView()
+        case .timeline:  TimelineView()
+        case .settings:  SettingsView()
         }
     }
 }
