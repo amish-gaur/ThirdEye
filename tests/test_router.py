@@ -57,6 +57,28 @@ def test_collapsed_can_still_escalate_to_emergency(dry_config) -> None:
     assert {"call_homeowner", "call_dispatch", "call_family"} <= set(result.actions)
 
 
+def test_emergency_fans_out_to_neighbors_with_dedup(dry_config) -> None:
+    cfg = dry_config
+    object.__setattr__(
+        cfg,
+        "neighbor_phones",
+        (
+            cfg.emergency_dispatch_phone,  # duplicate of dispatch — must dedupe
+            "+15555550199",                # genuine 4th contact
+        ),
+    )
+    result = execute_action(sample_event(tier=4), config=cfg)
+    assert result.tier == 4
+    targets = {c.to for c in result.calls}
+    assert targets == {
+        cfg.homeowner_phone,
+        cfg.emergency_dispatch_phone,
+        cfg.family_phone,
+        "+15555550199",
+    }
+    assert any(a.startswith("call_neighbor") for a in result.actions)
+
+
 def test_tier3_call_path_does_not_depend_on_public_base_url(dry_config) -> None:
     cfg = dry_config
     object.__setattr__(cfg, "public_base_url", "http://127.0.0.1:8001")

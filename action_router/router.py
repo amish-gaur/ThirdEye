@@ -415,6 +415,11 @@ def _tier_emergency(event: Dict[str, Any], cfg: Config, result: ActionResult) ->
         ("family", cfg.family_phone),
     ]
     targets = [(label, num) for label, num in targets if num]
+    seen = {num for _, num in targets}
+    for idx, num in enumerate(cfg.neighbor_phones, start=1):
+        if num and num not in seen:
+            targets.append((f"neighbor{idx}", num))
+            seen.add(num)
     if not targets:
         result.errors.append("no emergency contacts configured")
         return result

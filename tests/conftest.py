@@ -22,6 +22,8 @@ os.environ["TWILIO_FROM_NUMBER"] = "+15555550100"
 os.environ["HOMEOWNER_PHONE"] = "+15555550101"
 os.environ["EMERGENCY_DISPATCH_PHONE"] = "+15555550102"
 os.environ["FAMILY_PHONE"] = "+15555550103"
+os.environ["NEIGHBOR_PHONES"] = ""
+os.environ["IMESSAGE_RECIPIENTS"] = ""
 os.environ["PUBLIC_BASE_URL"] = "https://example.test"
 
 from pathlib import Path  # noqa: E402
@@ -60,6 +62,8 @@ def dry_config(tmp_path: Path) -> Config:
         homeowner_phone="+15555550101",
         emergency_dispatch_phone="+15555550102",
         family_phone="+15555550103",
+        neighbor_phones=(),
+        imessage_recipients=(),
         public_base_url="https://example.test",
         media_dir=tmp_path / "media",
         dry_run=True,
