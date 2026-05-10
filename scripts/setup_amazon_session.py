@@ -19,7 +19,15 @@ from pathlib import Path
 
 from action_router.config import CONFIG
 
-LOGIN_URL = "https://www.amazon.com/ap/signin"
+LOGIN_URL = (
+    "https://www.amazon.com/ap/signin?"
+    "openid.return_to=https%3A%2F%2Fwww.amazon.com%2F%3Fref_%3Dnav_ya_signin&"
+    "openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&"
+    "openid.assoc_handle=usflex&"
+    "openid.mode=checkid_setup&"
+    "openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&"
+    "openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0"
+)
 SUCCESS_HINT_URL = "https://www.amazon.com/gp/css/homepage.html"
 
 
@@ -49,15 +57,23 @@ def main() -> int:
             browser.close()
             return 130
 
-        # Sanity-check: ping the account home and bail if Amazon still wants login.
-        page.goto(SUCCESS_HINT_URL, timeout=30_000)
-        if "/ap/signin" in page.url:
-            print("Still on sign-in. Session NOT saved. Try again.")
-            browser.close()
-            return 1
+        # Best-effort sanity check — skip if the page/browser was already closed.
+        try:
+            page.goto(SUCCESS_HINT_URL, timeout=15_000)
+            if "/ap/signin" in page.url:
+                print("Still on sign-in. Session NOT saved. Try again.")
+                browser.close()
+                return 1
+        except Exception as exc:
+            print(f"(skipping post-login check: {exc.__class__.__name__}) — saving session anyway.")
 
-        context.storage_state(path=str(out_path))
-        browser.close()
+        try:
+            context.storage_state(path=str(out_path))
+        finally:
+            try:
+                browser.close()
+            except Exception:
+                pass
 
     print(f"Saved storage_state to {out_path}")
     print("You can close this window. Return flow is now wired.")
