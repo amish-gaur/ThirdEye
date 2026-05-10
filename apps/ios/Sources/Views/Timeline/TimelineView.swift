@@ -11,8 +11,7 @@ struct TimelineView: View {
 
     var body: some View {
         ZStack {
-            Maroon.m950.ignoresSafeArea()
-            Aurora().opacity(0.55)
+            Theme.bg.ignoresSafeArea()
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 22) {
@@ -33,16 +32,15 @@ struct TimelineView: View {
         }
     }
 
-    // MARK: - Pieces
-
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("TIMELINE")
-                .font(.teCaps).tracking(2.4)
-                .foregroundStyle(Maroon.m200.opacity(0.85))
+                .font(.system(size: 10.5, weight: .heavy, design: .monospaced))
+                .tracking(2.4)
+                .foregroundStyle(Theme.textMuted)
             Text("What happened.")
-                .font(.system(size: 40, weight: .heavy, design: .serif))
-                .foregroundStyle(Cream.c50)
+                .font(.system(size: 40, weight: .semibold, design: .serif))
+                .foregroundStyle(Theme.text)
         }
     }
 
@@ -62,16 +60,13 @@ struct TimelineView: View {
             ForEach(grouped(), id: \.0) { day, items in
                 VStack(alignment: .leading, spacing: 10) {
                     Text(day.uppercased())
-                        .font(.teCaps).tracking(2.2)
-                        .foregroundStyle(Maroon.m200.opacity(0.70))
+                        .font(.system(size: 10.5, weight: .heavy, design: .monospaced))
+                        .tracking(2.2)
+                        .foregroundStyle(Theme.textMuted)
                     VStack(spacing: 8) {
                         ForEach(items) { event in
-                            Button {
-                                selected = event
-                            } label: {
-                                row(event)
-                            }
-                            .buttonStyle(.plain)
+                            Button { selected = event } label: { row(event) }
+                                .buttonStyle(.plain)
                         }
                     }
                 }
@@ -82,11 +77,11 @@ struct TimelineView: View {
     private var emptyState: some View {
         VStack(spacing: 8) {
             Text("No events at this tier.")
-                .font(.teH3)
-                .foregroundStyle(Cream.c50.opacity(0.7))
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Theme.text)
             Text("Tap All to see everything.")
-                .font(.teBodySm)
-                .foregroundStyle(Maroon.m200)
+                .font(.system(size: 13))
+                .foregroundStyle(Theme.textMuted)
         }
         .frame(maxWidth: .infinity, alignment: .center)
         .padding(.vertical, 40)
@@ -95,18 +90,18 @@ struct TimelineView: View {
     private func row(_ event: Incident) -> some View {
         HStack(spacing: 14) {
             Text(event.timeElapsed.uppercased())
-                .font(.teMono)
-                .foregroundStyle(Cream.c50.opacity(0.55))
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(Theme.textMuted)
                 .frame(width: 80, alignment: .leading)
             VStack(alignment: .leading, spacing: 2) {
                 Text(event.summary)
                     .font(.system(size: 14.5))
-                    .foregroundStyle(Cream.c50)
+                    .foregroundStyle(Theme.text)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                 Text("\(event.scene) · \(event.cameraNode)")
-                    .font(.teMono)
-                    .foregroundStyle(Cream.c50.opacity(0.50))
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Theme.textMuted)
             }
             Spacer()
             SeverityBadge(tier: event.tier)
@@ -114,16 +109,15 @@ struct TimelineView: View {
         .padding(14)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.black.opacity(0.30))
+                .fill(Theme.surface)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Maroon.m300.opacity(0.10), lineWidth: 1)
+                .strokeBorder(Theme.border, lineWidth: 1)
         )
     }
 
     private func grouped() -> [(String, [Incident])] {
-        // Mock grouping by the timeElapsed string ("2h ago", "yesterday")
         var dict: [String: [Incident]] = [:]
         var order: [String] = []
         for ev in filtered {
@@ -149,18 +143,11 @@ private struct FilterChip: View {
         Button(action: action) {
             Text(text)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(active ? Ink : Cream.c50.opacity(0.75))
+                .foregroundStyle(active ? Theme.primaryFg : Theme.text)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 6)
-                .background(
-                    Capsule().fill(active ? Cream.c50 : Color.clear)
-                )
-                .overlay(
-                    Capsule().strokeBorder(
-                        active ? Color.clear : Maroon.m300.opacity(0.20),
-                        lineWidth: 1
-                    )
-                )
+                .background(Capsule().fill(active ? Theme.primary : Theme.surface))
+                .overlay(Capsule().strokeBorder(active ? Color.clear : Theme.border, lineWidth: 1))
         }
         .buttonStyle(.plain)
     }

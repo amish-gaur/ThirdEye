@@ -9,12 +9,12 @@ struct SectionHead: View {
         HStack(alignment: .bottom) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(eyebrow.uppercased())
-                    .font(.teCaps)
+                    .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
                     .tracking(2.4)
-                    .foregroundStyle(Maroon.m200)
+                    .foregroundStyle(Theme.textMuted)
                 Text(title)
-                    .font(.teH1)
-                    .foregroundStyle(Cream.c50)
+                    .font(.system(size: 28, weight: .semibold, design: .serif))
+                    .foregroundStyle(Theme.text)
             }
             Spacer()
             accessory
@@ -31,10 +31,10 @@ struct ShimmerText: View {
             .foregroundStyle(
                 LinearGradient(
                     stops: [
-                        .init(color: Maroon.m100.opacity(0.55), location: 0.0),
-                        .init(color: Cream.c100,                location: 0.45),
-                        .init(color: Maroon.m100.opacity(0.55), location: 0.65),
-                        .init(color: Maroon.m100.opacity(0.45), location: 1.0),
+                        .init(color: Theme.destructive.opacity(0.55), location: 0.0),
+                        .init(color: Theme.text,                       location: 0.45),
+                        .init(color: Theme.destructive.opacity(0.55), location: 0.65),
+                        .init(color: Theme.destructive.opacity(0.45), location: 1.0),
                     ],
                     startPoint: .init(x: phase, y: 0.5),
                     endPoint: .init(x: phase + 1, y: 0.5)

@@ -11,8 +11,8 @@ struct DashboardView: View {
 
     var body: some View {
         ZStack {
-            Maroon.m950.ignoresSafeArea()
-            Aurora().opacity(0.85)
+            Theme.bg.ignoresSafeArea()
+            Aurora().opacity(0.55)
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 26) {
@@ -31,63 +31,48 @@ struct DashboardView: View {
         }
     }
 
-    // MARK: - Hero
-
     private var hero: some View {
-        ZStack(alignment: .topLeading) {
-            // hero card aurora
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .fill(Maroon.m900.opacity(0.30))
-            Aurora().clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 6) {
-                    Image(systemName: "shield.checkered")
-                        .font(.system(size: 11, weight: .bold))
-                    Text("OPERATOR CONSOLE · ALL SYSTEMS LOCAL")
-                        .font(.teCaps).tracking(2.4)
-                }
-                .foregroundStyle(Maroon.m200.opacity(0.95))
-
-                heroHeadline
-
-                Text("Four cameras streaming. Frames are analyzed on this device, never uploaded. The brain only sees structured event records.")
-                    .font(.system(size: 15.5, weight: .regular))
-                    .foregroundStyle(Cream.c50.opacity(0.65))
-                    .lineSpacing(2)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                HStack(spacing: 6) {
-                    HeroStat(label: "Cameras online", value: "\(cameras.filter(\.online).count) / \(cameras.count)")
-                    HeroStat(label: "Events today", value: "4")
-                    HeroStat(label: "Frames uploaded", value: "0", strong: true)
-                }
-                .padding(.top, 4)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 6) {
+                Image(systemName: "shield.checkered")
+                    .font(.system(size: 11, weight: .bold))
+                Text("OPERATOR CONSOLE · ALL SYSTEMS LOCAL")
+                    .font(.system(size: 10.5, weight: .heavy, design: .monospaced))
+                    .tracking(2.4)
             }
-            .padding(24)
+            .foregroundStyle(Theme.textMuted)
+
+            heroHeadline
+
+            Text("Four cameras streaming. Frames are analyzed on this device, never uploaded. The brain only sees structured event records.")
+                .font(.system(size: 15.5))
+                .foregroundStyle(Theme.textMuted)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 6) {
+                HeroStat(label: "Cameras online", value: "\(cameras.filter(\.online).count) / \(cameras.count)")
+                HeroStat(label: "Events today", value: "4")
+                HeroStat(label: "Frames uploaded", value: "0", strong: true)
+            }
+            .padding(.top, 4)
         }
-        .overlay(
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .strokeBorder(Maroon.m300.opacity(0.10), lineWidth: 1)
-        )
     }
 
     private var heroHeadline: some View {
-        let serif = Font.system(size: 44, weight: .heavy, design: .serif)
+        let serif = Font.system(size: 44, weight: .semibold, design: .serif)
         return (
             Text("Everything calm ")
                 .font(serif)
-                .foregroundStyle(Cream.c50)
+                .foregroundStyle(Theme.text)
             +
             Text("at home.")
                 .font(serif)
-                .foregroundStyle(Maroon.m100)
+                .foregroundStyle(Theme.destructive)
         )
         .lineSpacing(-2)
         .fixedSize(horizontal: false, vertical: true)
     }
-
-    // MARK: - Sections
 
     private var cameraSection: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -110,8 +95,6 @@ struct DashboardView: View {
     }
 }
 
-// MARK: - Hero stat pill
-
 private struct HeroStat: View {
     let label: String
     let value: String
@@ -120,75 +103,62 @@ private struct HeroStat: View {
     var body: some View {
         HStack(spacing: 6) {
             Text(label.uppercased())
-                .font(.teCaps).tracking(1.6)
-                .foregroundStyle(Cream.c50.opacity(strong ? 1.0 : 0.65))
-            Text("·").foregroundStyle(Maroon.m200.opacity(0.4))
+                .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                .tracking(1.6)
+                .foregroundStyle(Theme.textMuted)
+            Text("·").foregroundStyle(Theme.textSubtle)
             Text(value)
-                .font(.teCaps).tracking(1.6)
-                .foregroundStyle(Cream.c50)
+                .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                .tracking(1.6)
+                .foregroundStyle(strong ? Theme.destructive : Theme.text)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 5)
-        .background(
-            Capsule().fill(strong ? Maroon.m200.opacity(0.10) : Maroon.m900.opacity(0.40))
-        )
-        .overlay(
-            Capsule().strokeBorder(strong ? Maroon.m200.opacity(0.40) : Maroon.m300.opacity(0.15), lineWidth: 0.5)
-        )
+        .background(Capsule().fill(strong ? Theme.destructiveSoft : Theme.muted))
+        .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 0.5))
     }
 }
-
-// MARK: - Active incident card (Spotlight-flavored)
 
 private struct ActiveIncidentCard: View {
     let incident: Incident
 
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [Maroon.m700.opacity(0.85), Maroon.m900.opacity(0.95)],
-                        startPoint: .topLeading, endPoint: .bottomTrailing
-                    )
-                )
-            // soft cream glow upper-left (Spotlight-style static)
-            RadialGradient(
-                colors: [Color(hex: "#E5B4BB").opacity(0.18), .clear],
-                center: UnitPoint(x: 0.2, y: 0.25),
-                startRadius: 0, endRadius: 240
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 8) {
-                    Circle().fill(Maroon.m200).frame(width: 8, height: 8)
-                    Text("ACTIVE INCIDENT · \(incident.timeElapsed.uppercased())")
-                        .font(.teCaps).tracking(2.0)
-                        .foregroundStyle(Maroon.m100)
-                }
-                Text(incident.summary)
-                    .font(.system(size: 26, weight: .heavy, design: .serif))
-                    .foregroundStyle(Cream.c50)
-                    .lineLimit(3)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(incident.suspectDescription)
-                    .font(.teH3)
-                    .foregroundStyle(Cream.c50.opacity(0.70))
-                HStack(spacing: 8) {
-                    SeverityBadge(tier: incident.tier, pulsing: true)
-                    Chip(text: "CALL HOMEOWNER")
-                    Chip(text: "CALL NEIGHBORS")
-                }
-                .padding(.top, 4)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(Theme.destructive)
+                    .frame(width: 8, height: 8)
+                Text("ACTIVE INCIDENT · \(incident.timeElapsed.uppercased())")
+                    .font(.system(size: 10.5, weight: .heavy, design: .monospaced))
+                    .tracking(2.0)
+                    .foregroundStyle(Theme.destructive)
             }
-            .padding(22)
+            Text(incident.summary)
+                .font(.system(size: 26, weight: .semibold, design: .serif))
+                .foregroundStyle(Theme.text)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(incident.suspectDescription)
+                .font(.system(size: 15))
+                .foregroundStyle(Theme.textMuted)
+            HStack(spacing: 8) {
+                SeverityBadge(tier: incident.tier, pulsing: true)
+                Chip(text: "CALL HOMEOWNER")
+                Chip(text: "CALL NEIGHBORS")
+            }
+            .padding(.top, 4)
         }
+        .padding(22)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(Theme.surface)
+        )
         .overlay(
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(Maroon.m100.opacity(0.22), lineWidth: 1)
+                .strokeBorder(Theme.destructive.opacity(0.40), lineWidth: 1.5)
         )
-        .shadow(color: Maroon.m900.opacity(0.6), radius: 30, y: 18)
+        .shadow(color: Theme.destructive.opacity(0.20), radius: 26, y: 8)
     }
 }
 
@@ -196,16 +166,15 @@ private struct Chip: View {
     let text: String
     var body: some View {
         Text(text)
-            .font(.teCaps).tracking(1.4)
-            .foregroundStyle(Cream.c50.opacity(0.75))
+            .font(.system(size: 10, weight: .heavy, design: .monospaced))
+            .tracking(1.4)
+            .foregroundStyle(Theme.textMuted)
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
-            .background(Capsule().fill(Maroon.m200.opacity(0.10)))
-            .overlay(Capsule().strokeBorder(Maroon.m200.opacity(0.20), lineWidth: 0.5))
+            .background(Capsule().fill(Theme.muted))
+            .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 0.5))
     }
 }
-
-// MARK: - Event row (mini gradient thumbnail)
 
 private struct EventRow: View {
     let event: Incident
@@ -225,12 +194,12 @@ private struct EventRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(event.summary)
                     .font(.system(size: 14.5))
-                    .foregroundStyle(Cream.c50)
+                    .foregroundStyle(Theme.text)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                 Text("\(event.cameraNode) · \(event.timeElapsed)")
-                    .font(.teMono)
-                    .foregroundStyle(Cream.c50.opacity(0.55))
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Theme.textMuted)
             }
             Spacer()
             SeverityBadge(tier: event.tier)
@@ -238,11 +207,11 @@ private struct EventRow: View {
         .padding(14)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.black.opacity(0.30))
+                .fill(Theme.surface)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Maroon.m300.opacity(0.10), lineWidth: 1)
+                .strokeBorder(Theme.border, lineWidth: 1)
         )
     }
 }

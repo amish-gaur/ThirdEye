@@ -1,40 +1,34 @@
 import SwiftUI
 
-/// Cinematic camera tile — mirrors apps/web/src/components/CameraTile.tsx.
-/// Canvas-rendered radial gradient + drift haze + film grain + vignette,
-/// plus an HTML-style HUD (status dot, REC label, scene + clock + fps).
+/// Cinematic camera tile — kept dark since security feeds are inherently low-light.
+/// Now sits on a white card with subtle border (Figma light theme).
 struct CameraTile: View {
     let node: CameraNode
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ZStack(alignment: .topLeading) {
-                // Animated film canvas
                 FilmCanvas(toneHot: node.gradient.stops.hot, toneCool: node.gradient.stops.cool)
-
-                // Subtle scanline overlay (mix-blend-overlay equivalent)
-                ScanlineLayer().opacity(0.20).blendMode(.overlay)
-
-                // Animated downward scan beam
+                ScanlineLayer().opacity(0.18).blendMode(.overlay)
                 ScanBeam()
-
-                // HUD
                 hud
             }
             .aspectRatio(16.0/10.0, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(Maroon.m300.opacity(0.10), lineWidth: 1)
+                    .strokeBorder(Theme.border, lineWidth: 1)
             )
 
             HStack {
                 Text(node.name)
-                    .font(.teH3)
-                    .foregroundStyle(Cream.c50)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Theme.text)
                 Spacer()
-                Image(systemName: "chevron.right")
-                    .foregroundStyle(Maroon.m200)
+                Text(node.online ? "LIVE" : "OFFLINE")
+                    .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                    .tracking(1.4)
+                    .foregroundStyle(node.online ? Theme.destructive : Theme.textSubtle)
             }
             .padding(.top, 10)
             .padding(.horizontal, 4)
@@ -43,31 +37,31 @@ struct CameraTile: View {
 
     private var hud: some View {
         ZStack(alignment: .topLeading) {
-            // top-left: status dot + node label
             HStack(spacing: 8) {
                 StatusDot(online: node.online)
                 Text(node.name.uppercased())
-                    .font(.teCaps).tracking(1.8)
-                    .foregroundStyle(Cream.c50.opacity(0.85))
+                    .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                    .tracking(1.6)
+                    .foregroundStyle(.white.opacity(0.85))
             }
             .padding(12)
 
-            // top-right: REC indicator
             HStack {
                 Spacer()
                 Text(node.online ? "● REC" : "○ OFFLINE")
-                    .font(.teCaps).tracking(2.2)
-                    .foregroundStyle(Cream.c50.opacity(0.65))
+                    .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                    .tracking(2.0)
+                    .foregroundStyle(.white.opacity(0.65))
             }
             .padding(12)
 
-            // bottom: scene + clock + fps
             VStack {
                 Spacer()
                 HStack {
                     Text(node.name.uppercased())
-                        .font(.teCaps).tracking(1.6)
-                        .foregroundStyle(Cream.c50.opacity(0.60))
+                        .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                        .tracking(1.6)
+                        .foregroundStyle(.white.opacity(0.6))
                     Spacer()
                     Clock()
                 }
@@ -77,8 +71,6 @@ struct CameraTile: View {
     }
 }
 
-// MARK: - Status dot with pulse ring
-
 private struct StatusDot: View {
     let online: Bool
     @State private var pulse = false
@@ -87,21 +79,19 @@ private struct StatusDot: View {
         ZStack {
             if online {
                 Circle()
-                    .fill(Cream.c50.opacity(0.18))
+                    .fill(.white.opacity(0.18))
                     .frame(width: 14, height: 14)
                     .scaleEffect(pulse ? 1.3 : 0.9)
                     .opacity(pulse ? 0.0 : 0.7)
                     .animation(.easeInOut(duration: 1.6).repeatForever(autoreverses: false), value: pulse)
             }
             Circle()
-                .fill(online ? Cream.c50 : Cream.c50.opacity(0.30))
+                .fill(online ? .white : .white.opacity(0.30))
                 .frame(width: 6, height: 6)
         }
         .onAppear { pulse = true }
     }
 }
-
-// MARK: - Animated film canvas
 
 private struct FilmCanvas: View {
     let toneHot: Color
@@ -114,82 +104,74 @@ private struct FilmCanvas: View {
             let w = size.width
             let h = size.height
             let t = tick.timeIntervalSinceReferenceDate
-            // bind locals so the closure depends on @State (forces redraw)
-            let tone = (hot: toneHot, cool: toneCool)
 
-                // Radial wash — hot upper-left fading to cool then near-black
-                let radial = Gradient(stops: [
-                    .init(color: tone.hot, location: 0.0),
-                    .init(color: tone.cool, location: 0.55),
-                    .init(color: Color(hex: "#0A0103"), location: 1.0),
-                ])
-                ctx.fill(
-                    Path(CGRect(origin: .zero, size: size)),
-                    with: .radialGradient(
-                        radial,
-                        center: CGPoint(x: w * 0.25, y: h * 0.30),
-                        startRadius: 0,
-                        endRadius: max(w, h) * 0.95
-                    )
+            let radial = Gradient(stops: [
+                .init(color: toneHot, location: 0.0),
+                .init(color: toneCool, location: 0.55),
+                .init(color: Color(hex: "#0A0103"), location: 1.0),
+            ])
+            ctx.fill(
+                Path(CGRect(origin: .zero, size: size)),
+                with: .radialGradient(
+                    radial,
+                    center: CGPoint(x: w * 0.25, y: h * 0.30),
+                    startRadius: 0,
+                    endRadius: max(w, h) * 0.95
                 )
+            )
 
-                // Drift haze — soft moving maroon strip
-                let dy = h * 0.5 + CGFloat(sin(t * 0.5) * 30)
-                let hazeStops = Gradient(stops: [
-                    .init(color: Color(hex: "#B85968").opacity(0.0),  location: 0.0),
-                    .init(color: Color(hex: "#B85968").opacity(0.10), location: 0.5),
-                    .init(color: Color(hex: "#B85968").opacity(0.0),  location: 1.0),
-                ])
-                ctx.fill(
-                    Path(CGRect(origin: .zero, size: size)),
-                    with: .linearGradient(
-                        hazeStops,
-                        startPoint: CGPoint(x: 0, y: dy),
-                        endPoint: CGPoint(x: w, y: dy + 1)
-                    )
+            let dy = h * 0.5 + CGFloat(sin(t * 0.5) * 30)
+            let hazeStops = Gradient(stops: [
+                .init(color: Color(hex: "#D4183D").opacity(0.0),  location: 0.0),
+                .init(color: Color(hex: "#D4183D").opacity(0.10), location: 0.5),
+                .init(color: Color(hex: "#D4183D").opacity(0.0),  location: 1.0),
+            ])
+            ctx.fill(
+                Path(CGRect(origin: .zero, size: size)),
+                with: .linearGradient(
+                    hazeStops,
+                    startPoint: CGPoint(x: 0, y: dy),
+                    endPoint: CGPoint(x: w, y: dy + 1)
                 )
+            )
 
-                // Film grain — 220 dots, mix of bright/dark/skip
-                ctx.opacity = 0.14
-                var rng = SystemRandomNumberGenerator()
-                for _ in 0..<220 {
-                    let x = CGFloat.random(in: 0..<w, using: &rng)
-                    let y = CGFloat.random(in: 0..<h, using: &rng)
-                    let v = Double.random(in: 0..<1, using: &rng)
-                    let color: Color
-                    if v > 0.85 {
-                        color = Color(hex: "#F5E6D3").opacity(0.7)
-                    } else if v > 0.5 {
-                        color = .black.opacity(0.7)
-                    } else {
-                        continue
-                    }
-                    let dot = Path(CGRect(x: x, y: y, width: 1.4, height: 1.4))
-                    ctx.fill(dot, with: .color(color))
+            ctx.opacity = 0.14
+            var rng = SystemRandomNumberGenerator()
+            for _ in 0..<200 {
+                let x = CGFloat.random(in: 0..<w, using: &rng)
+                let y = CGFloat.random(in: 0..<h, using: &rng)
+                let v = Double.random(in: 0..<1, using: &rng)
+                let color: Color
+                if v > 0.85 {
+                    color = .white.opacity(0.7)
+                } else if v > 0.5 {
+                    color = .black.opacity(0.7)
+                } else {
+                    continue
                 }
-                ctx.opacity = 1
+                let dot = Path(CGRect(x: x, y: y, width: 1.4, height: 1.4))
+                ctx.fill(dot, with: .color(color))
+            }
+            ctx.opacity = 1
 
-                // Vignette
-                let vignette = Gradient(stops: [
-                    .init(color: .clear, location: 0.0),
-                    .init(color: .black.opacity(0.55), location: 1.0),
-                ])
-                ctx.fill(
-                    Path(CGRect(origin: .zero, size: size)),
-                    with: .radialGradient(
-                        vignette,
-                        center: CGPoint(x: w * 0.5, y: h * 0.5),
-                        startRadius: min(w, h) * 0.35,
-                        endRadius: max(w, h) * 0.7
-                    )
+            let vignette = Gradient(stops: [
+                .init(color: .clear, location: 0.0),
+                .init(color: .black.opacity(0.55), location: 1.0),
+            ])
+            ctx.fill(
+                Path(CGRect(origin: .zero, size: size)),
+                with: .radialGradient(
+                    vignette,
+                    center: CGPoint(x: w * 0.5, y: h * 0.5),
+                    startRadius: min(w, h) * 0.35,
+                    endRadius: max(w, h) * 0.7
                 )
+            )
         }
         .onReceive(timer) { tick = $0 }
-        .drawingGroup() // GPU-composite for smoother animation
+        .drawingGroup()
     }
 }
-
-// MARK: - Static scanline pattern
 
 private struct ScanlineLayer: View {
     var body: some View {
@@ -205,8 +187,6 @@ private struct ScanlineLayer: View {
     }
 }
 
-// MARK: - Animated scan beam
-
 private struct ScanBeam: View {
     @State private var phase: CGFloat = -0.1
 
@@ -215,7 +195,7 @@ private struct ScanBeam: View {
             let h = geo.size.height
             let band: CGFloat = 60
             LinearGradient(
-                colors: [.clear, Color(hex: "#C98A93").opacity(0.10), .clear],
+                colors: [.clear, .white.opacity(0.10), .clear],
                 startPoint: .top, endPoint: .bottom
             )
             .frame(height: band)
@@ -230,8 +210,6 @@ private struct ScanBeam: View {
     }
 }
 
-// MARK: - Live clock
-
 private struct Clock: View {
     @State private var now = Date()
     private let formatter: DateFormatter = {
@@ -242,8 +220,9 @@ private struct Clock: View {
 
     var body: some View {
         Text("\(formatter.string(from: now)) · 24FPS")
-            .font(.teCaps).tracking(1.6)
-            .foregroundStyle(Cream.c50.opacity(0.60))
+            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+            .tracking(1.6)
+            .foregroundStyle(.white.opacity(0.6))
             .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { d in
                 now = d
             }

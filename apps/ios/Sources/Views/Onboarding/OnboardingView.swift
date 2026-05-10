@@ -13,11 +13,11 @@ struct OnboardingView: View {
 
     var body: some View {
         ZStack {
-            Maroon.m950.ignoresSafeArea()
-            Aurora().opacity(0.95)
+            Theme.bg.ignoresSafeArea()
+            Aurora().opacity(0.55)
 
             ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 24) {
+                VStack(alignment: .leading, spacing: 22) {
                     hero
                     stepper
                     Group {
@@ -44,42 +44,26 @@ struct OnboardingView: View {
         }
     }
 
-    // MARK: - Hero
     private var hero: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("SETUP")
-                .font(.teCaps).tracking(2.4)
-                .foregroundStyle(Maroon.m200)
+                .font(.system(size: 10.5, weight: .heavy, design: .monospaced))
+                .tracking(2.4)
+                .foregroundStyle(Theme.textMuted)
             (
                 Text("Stand up your home ")
-                    .font(.teDisplay)
-                    .foregroundStyle(Cream.c50)
+                    .font(.system(size: 36, weight: .semibold, design: .serif))
+                    .foregroundStyle(Theme.text)
                 +
                 Text("in five minutes.")
-                    .font(.teDisplay)
-                    .foregroundStyle(Maroon.m100)
+                    .font(.system(size: 36, weight: .semibold, design: .serif))
+                    .foregroundStyle(Theme.destructive)
             )
             .lineLimit(3)
             .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(22)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [Maroon.m700.opacity(0.55), Maroon.m900.opacity(0.85)],
-                        startPoint: .topLeading, endPoint: .bottomTrailing
-                    )
-                )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .strokeBorder(Maroon.m100.opacity(0.18), lineWidth: 1)
-        )
     }
 
-    // MARK: - Stepper
     private var stepper: some View {
         HStack(spacing: 8) {
             ForEach(0..<stepLabels.count, id: \.self) { i in
@@ -94,36 +78,34 @@ struct OnboardingView: View {
         HStack(spacing: 6) {
             ZStack {
                 Circle()
-                    .fill(active ? Cream.c50 : Maroon.m700)
+                    .fill(active ? Theme.primary : Theme.muted)
                     .frame(width: 22, height: 22)
                 Text("\(i + 1)")
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .foregroundStyle(active ? Ink : Maroon.m200)
+                    .foregroundStyle(active ? Theme.primaryFg : Theme.textMuted)
             }
             if i == step {
                 Text(stepLabels[i])
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Cream.c50)
+                    .foregroundStyle(Theme.text)
             }
             if i < stepLabels.count - 1 {
-                Text("·").foregroundStyle(Maroon.m700)
+                Text("·").foregroundStyle(Theme.textSubtle)
             }
         }
     }
 }
-
-// MARK: - Step views
 
 private struct WelcomeStep: View {
     let onContinue: () -> Void
     var body: some View {
         Card {
             Text("Sign in")
-                .font(.teH2)
-                .foregroundStyle(Cream.c50)
+                .font(.system(size: 22, weight: .semibold, design: .serif))
+                .foregroundStyle(Theme.text)
             Text("Production auth — works the same on web and mobile. We never store passwords ourselves.")
-                .font(.teBody)
-                .foregroundStyle(Maroon.m100)
+                .font(.system(size: 14))
+                .foregroundStyle(Theme.textMuted)
                 .fixedSize(horizontal: false, vertical: true)
             PrimaryButton(title: "Continue", action: onContinue)
         }
@@ -137,11 +119,11 @@ private struct PairStep: View {
     var body: some View {
         Card {
             Text("Pair your first camera node")
-                .font(.teH2)
-                .foregroundStyle(Cream.c50)
+                .font(.system(size: 22, weight: .semibold, design: .serif))
+                .foregroundStyle(Theme.text)
             Text("Open ThirdEye on the device that will run inference (your laptop, an old phone), and scan this code. Joins the home mesh — no router config.")
-                .font(.teBody)
-                .foregroundStyle(Maroon.m100)
+                .font(.system(size: 14))
+                .foregroundStyle(Theme.textMuted)
                 .fixedSize(horizontal: false, vertical: true)
 
             if pairCode == nil {
@@ -153,12 +135,13 @@ private struct PairStep: View {
                     FauxQR(seed: code)
                     VStack(alignment: .leading, spacing: 8) {
                         Text("OR TYPE THIS CODE")
-                            .font(.teCaps).tracking(1.6)
-                            .foregroundStyle(Maroon.m200)
+                            .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                            .tracking(1.6)
+                            .foregroundStyle(Theme.textMuted)
                         Text(code)
                             .font(.system(size: 28, weight: .heavy, design: .monospaced))
                             .tracking(8)
-                            .foregroundStyle(Cream.c50)
+                            .foregroundStyle(Theme.text)
                     }
                     Spacer()
                 }
@@ -181,11 +164,11 @@ private struct ContactsStep: View {
     var body: some View {
         Card {
             Text("Who should we reach?")
-                .font(.teH2)
-                .foregroundStyle(Cream.c50)
+                .font(.system(size: 22, weight: .semibold, design: .serif))
+                .foregroundStyle(Theme.text)
             Text("We ring this number first on Tier 3 alerts and fan out to family on Tier 4.")
-                .font(.teBody)
-                .foregroundStyle(Maroon.m100)
+                .font(.system(size: 14))
+                .foregroundStyle(Theme.textMuted)
                 .fixedSize(horizontal: false, vertical: true)
             FieldInput(label: "Your phone", value: $phone)
             FieldInput(label: "Family / emergency", value: $emergency)
@@ -202,11 +185,11 @@ private struct ConsentsStep: View {
     var body: some View {
         Card {
             Text("A few consents")
-                .font(.teH2)
-                .foregroundStyle(Cream.c50)
+                .font(.system(size: 22, weight: .semibold, design: .serif))
+                .foregroundStyle(Theme.text)
             Text("Recording laws vary by state. Tell us about this camera so the system stays on the right side of the line.")
-                .font(.teBody)
-                .foregroundStyle(Maroon.m100)
+                .font(.system(size: 14))
+                .foregroundStyle(Theme.textMuted)
                 .fixedSize(horizontal: false, vertical: true)
             ConsentRow(text: "I'm permitted to record at this location.", checked: $consentLocation)
             ConsentRow(text: "Run inference locally on this device. Frames don't leave my home network.", checked: $consentLocal)
@@ -222,21 +205,19 @@ private struct DoneStep: View {
             HStack {
                 Image(systemName: "checkmark.shield.fill")
                     .font(.system(size: 30))
-                    .foregroundStyle(Cream.c50)
+                    .foregroundStyle(Theme.destructive)
                 Text("You're set.")
-                    .font(.teH1)
-                    .foregroundStyle(Cream.c50)
+                    .font(.system(size: 28, weight: .semibold, design: .serif))
+                    .foregroundStyle(Theme.text)
             }
             Text("Your camera mesh is live. Add more nodes anytime from Settings.")
-                .font(.teBody)
-                .foregroundStyle(Maroon.m100)
+                .font(.system(size: 14))
+                .foregroundStyle(Theme.textMuted)
                 .fixedSize(horizontal: false, vertical: true)
             PrimaryButton(title: "Open the dashboard", action: onOpen)
         }
     }
 }
-
-// MARK: - Shared bits
 
 private struct Card<Content: View>: View {
     @ViewBuilder let content: () -> Content
@@ -247,18 +228,14 @@ private struct Card<Content: View>: View {
         .padding(22)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [Maroon.m700.opacity(0.55), Maroon.m900.opacity(0.85)],
-                        startPoint: .topLeading, endPoint: .bottomTrailing
-                    )
-                )
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Theme.surface)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(Maroon.m100.opacity(0.14), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(Theme.border, lineWidth: 1)
         )
+        .shadow(color: .black.opacity(0.04), radius: 20, y: 8)
     }
 }
 
@@ -269,12 +246,12 @@ private struct PrimaryButton: View {
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(.teButton)
-                .foregroundStyle(enabled ? Ink : Ink.opacity(0.5))
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(enabled ? Theme.primaryFg : Theme.primaryFg.opacity(0.5))
                 .padding(.vertical, 12)
                 .padding(.horizontal, 22)
                 .background(
-                    Capsule().fill(enabled ? Cream.c50 : Cream.c50.opacity(0.4))
+                    Capsule().fill(enabled ? Theme.primary : Theme.primary.opacity(0.4))
                 )
         }
         .disabled(!enabled)
@@ -287,20 +264,21 @@ private struct FieldInput: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(label.uppercased())
-                .font(.teCaps).tracking(1.4)
-                .foregroundStyle(Maroon.m200)
+                .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                .tracking(1.4)
+                .foregroundStyle(Theme.textMuted)
             TextField("", text: $value)
-                .font(.teBody)
-                .foregroundStyle(Cream.c50)
+                .font(.system(size: 15))
+                .foregroundStyle(Theme.text)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
                 .background(
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(Maroon.m900.opacity(0.6))
+                        .fill(Theme.surface2)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Maroon.m300.opacity(0.25), lineWidth: 1)
+                        .strokeBorder(Theme.border, lineWidth: 1)
                 )
                 .keyboardType(.phonePad)
                 .autocorrectionDisabled()
@@ -315,11 +293,11 @@ private struct ConsentRow: View {
         Button(action: { checked.toggle() }) {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: checked ? "checkmark.square.fill" : "square")
-                    .foregroundStyle(checked ? Cream.c50 : Maroon.m200)
+                    .foregroundStyle(checked ? Theme.primary : Theme.textSubtle)
                     .font(.system(size: 18))
                 Text(text)
-                    .font(.teBody)
-                    .foregroundStyle(Cream.c50.opacity(0.9))
+                    .font(.system(size: 14))
+                    .foregroundStyle(Theme.text)
                     .multilineTextAlignment(.leading)
                 Spacer()
             }
@@ -339,7 +317,7 @@ private struct FauxQR: View {
                 HStack(spacing: 1) {
                     ForEach(0..<cells, id: \.self) { col in
                         Rectangle()
-                            .fill(grid[row * cells + col] ? Ink : Color.clear)
+                            .fill(grid[row * cells + col] ? Theme.text : Color.clear)
                             .aspectRatio(1, contentMode: .fit)
                     }
                 }
@@ -349,7 +327,11 @@ private struct FauxQR: View {
         .frame(width: 168, height: 168)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Cream.c50)
+                .fill(Theme.surface2)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Theme.border, lineWidth: 1)
         )
     }
 

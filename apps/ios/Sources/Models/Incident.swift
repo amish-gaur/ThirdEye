@@ -13,32 +13,33 @@ enum Tier: Int, Codable, CaseIterable, Identifiable {
         }
     }
 
-    /// Dot color — used as the small severity indicator on tiles, badges.
+    /// Dot color — small severity indicator on light cards.
     var dot: Color {
         switch self {
-        case .ambient:   return Color(hex: "#C98A93")
-        case .notice:    return Color(hex: "#9A3142")
-        case .alert:     return Color(hex: "#B85968")
-        case .emergency: return Color(hex: "#E5B4BB")
+        case .ambient:   return Color(hex: "#717182")           // muted gray
+        case .notice:    return Color(hex: "#F1C8A5")           // warm sand
+        case .alert:     return Color(hex: "#D4183D")           // destructive red
+        case .emergency: return Color(hex: "#030213")           // near-black
         }
     }
 
-    /// Background tone for severity badges / hero.
+    /// Background tone for severity badges on light cards.
     var bg: Color {
         switch self {
-        case .ambient:   return Color(red: 201/255, green: 138/255, blue: 147/255).opacity(0.14)
-        case .notice:    return Color(red: 154/255, green: 49/255,  blue: 66/255).opacity(0.18)
-        case .alert:     return Color(red: 94/255,  green: 21/255,  blue: 33/255).opacity(0.45)
-        case .emergency: return Color(red: 31/255,  green: 5/255,   blue: 10/255).opacity(0.85)
+        case .ambient:   return Color(hex: "#717182").opacity(0.10)
+        case .notice:    return Color(hex: "#F1C8A5").opacity(0.30)
+        case .alert:     return Color(hex: "#D4183D").opacity(0.10)
+        case .emergency: return Color(hex: "#030213").opacity(0.92)
         }
     }
 
     /// Text color on the severity bg.
     var fg: Color {
         switch self {
-        case .ambient, .notice: return Color(hex: "#E5B4BB")
-        case .alert:            return Color(hex: "#F2D9DC")
-        case .emergency:        return Color(hex: "#FBF1E7")
+        case .ambient:   return Color(hex: "#717182")
+        case .notice:    return Color(hex: "#7A1521")
+        case .alert:     return Color(hex: "#D4183D")
+        case .emergency: return .white
         }
     }
 }

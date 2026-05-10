@@ -6,8 +6,7 @@ struct TimelineDetailView: View {
 
     var body: some View {
         ZStack {
-            Maroon.m950.ignoresSafeArea()
-            Aurora().opacity(0.5)
+            Theme.bg.ignoresSafeArea()
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 22) {
@@ -15,81 +14,70 @@ struct TimelineDetailView: View {
                         Button(action: { dismiss() }) {
                             HStack(spacing: 6) {
                                 Image(systemName: "chevron.left")
-                                Text("Timeline").font(.teH3)
+                                Text("Timeline").font(.system(size: 17, weight: .semibold))
                             }
-                            .foregroundStyle(Maroon.m100)
+                            .foregroundStyle(Theme.text)
                         }
                         Spacer()
                         SeverityBadge(tier: event.tier)
                     }
 
-                    // Hero summary
                     VStack(alignment: .leading, spacing: 10) {
                         Text("EVENT")
-                            .font(.teCaps).tracking(2.0)
-                            .foregroundStyle(Maroon.m200)
+                            .font(.system(size: 10.5, weight: .heavy, design: .monospaced))
+                            .tracking(2.0)
+                            .foregroundStyle(Theme.textMuted)
                         Text(event.summary)
-                            .font(.teH1)
-                            .foregroundStyle(Cream.c50)
+                            .font(.system(size: 28, weight: .semibold, design: .serif))
+                            .foregroundStyle(Theme.text)
                             .lineLimit(5)
                             .fixedSize(horizontal: false, vertical: true)
                         HStack(spacing: 8) {
                             Image(systemName: "video.fill")
-                                .foregroundStyle(Maroon.m200)
+                                .foregroundStyle(Theme.textMuted)
                             Text("\(event.cameraNode) · \(event.timeElapsed)")
-                                .font(.teBodySm)
-                                .foregroundStyle(Maroon.m100)
+                                .font(.system(size: 13))
+                                .foregroundStyle(Theme.textMuted)
                         }
                     }
-                    .padding(20)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 22, style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: [Maroon.m700.opacity(0.6), Maroon.m900.opacity(0.85)],
-                                    startPoint: .topLeading, endPoint: .bottomTrailing
-                                )
-                            )
-                    )
 
-                    // Faux clip thumbnail
                     ZStack {
-                        LinearGradient(colors: [Color(hex: "#5E1521"), Color(hex: "#1F050A")], startPoint: .topLeading, endPoint: .bottomTrailing)
+                        LinearGradient(
+                            colors: [Color(hex: "#5E1521"), Color(hex: "#1F050A")],
+                            startPoint: .topLeading, endPoint: .bottomTrailing
+                        )
                         Image(systemName: "play.circle.fill")
                             .font(.system(size: 56))
-                            .foregroundStyle(Cream.c50.opacity(0.92))
+                            .foregroundStyle(.white.opacity(0.92))
                     }
                     .frame(height: 220)
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
 
-                    // Detail sections
                     DetailSection(title: "SUSPECT", bodyText: event.suspectDescription)
                     DetailSection(title: "SCENE",   bodyText: event.scene)
                     DetailSection(title: "ACTIONS TAKEN", chips: actionsTaken(for: event.tier))
 
-                    // Footer actions
                     HStack(spacing: 12) {
                         Button(action: {}) {
                             Text("Acknowledge")
-                                .font(.teButton)
-                                .foregroundStyle(Cream.c50)
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(Theme.text)
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 14)
                                 .background(
                                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                        .fill(Maroon.m700)
+                                        .fill(Theme.muted)
                                 )
                         }
                         Button(action: {}) {
                             Text("Share")
-                                .font(.teButton)
-                                .foregroundStyle(Ink)
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(Theme.primaryFg)
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 14)
                                 .background(
                                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                        .fill(Cream.c50)
+                                        .fill(Theme.primary)
                                 )
                         }
                     }
@@ -119,12 +107,13 @@ private struct DetailSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
-                .font(.teCaps).tracking(1.6)
-                .foregroundStyle(Maroon.m200)
+                .font(.system(size: 10.5, weight: .heavy, design: .monospaced))
+                .tracking(1.6)
+                .foregroundStyle(Theme.textMuted)
             if let bodyText = bodyText {
                 Text(bodyText)
-                    .font(.teH3)
-                    .foregroundStyle(Cream.c50)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(Theme.text)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let chips = chips {
@@ -135,11 +124,11 @@ private struct DetailSection: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color.black.opacity(0.30))
+                .fill(Theme.surface)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Maroon.m800, lineWidth: 1)
+                .strokeBorder(Theme.border, lineWidth: 1)
         )
     }
 }
@@ -147,19 +136,19 @@ private struct DetailSection: View {
 private struct FlexibleChips: View {
     let items: [String]
     var body: some View {
-        // simple wrap via HStack; iOS 16+ has Layout but FlowLayout is overkill here
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(chunked(), id: \.self) { row in
                     HStack(spacing: 6) {
                         ForEach(row, id: \.self) { chip in
                             Text(chip)
-                                .font(.teCaps).tracking(1.2)
-                                .foregroundStyle(Cream.c50.opacity(0.85))
+                                .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                                .tracking(1.2)
+                                .foregroundStyle(Theme.text)
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 5)
-                                .background(Capsule().fill(Maroon.m200.opacity(0.10)))
-                                .overlay(Capsule().strokeBorder(Maroon.m200.opacity(0.25), lineWidth: 0.5))
+                                .background(Capsule().fill(Theme.muted))
+                                .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 0.5))
                         }
                     }
                 }

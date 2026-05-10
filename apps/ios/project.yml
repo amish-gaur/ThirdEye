@@ -41,7 +41,7 @@ targets:
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         UIRequiresFullScreen: YES
-        UIUserInterfaceStyle: Dark
+        UIUserInterfaceStyle: Light
         CFBundleDisplayName: "ThirdEye"
         NSCameraUsageDescription: "Used for the live camera feed."
         NSMicrophoneUsageDescription: "Used during active incident calls."

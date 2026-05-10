@@ -21,19 +21,19 @@ struct SeverityBadge: View {
                 )
                 .onAppear { if pulsing { pulse = true } }
             Text(tier.label)
-                .font(.teCaps)
+                .font(.system(size: 10.5, weight: .heavy, design: .monospaced))
                 .tracking(1.4)
                 .foregroundStyle(tier.fg)
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.vertical, 5)
         .background(
             RoundedRectangle(cornerRadius: 999, style: .continuous)
                 .fill(tier.bg)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 999, style: .continuous)
-                .strokeBorder(tier.dot.opacity(0.25), lineWidth: 0.5)
+                .strokeBorder(tier.dot.opacity(0.20), lineWidth: 0.5)
         )
     }
 }

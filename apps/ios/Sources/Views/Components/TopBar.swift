@@ -1,16 +1,15 @@
 import SwiftUI
 
-/// Sticky brand header — mirrors apps/web/src/components/Nav.tsx
-/// (without the page-level nav items, since iOS uses the bottom TabBar).
+/// Sticky brand header — light theme matching the Figma.
 struct SafeWatchTopBar: View {
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
-            HStack(spacing: 4) {
+            HStack(spacing: 5) {
                 Text("SafeWatch")
                     .font(.system(size: 22, weight: .semibold, design: .serif))
-                    .foregroundStyle(Cream.c50)
+                    .foregroundStyle(Theme.text)
                 Circle()
-                    .fill(Maroon.m300)
+                    .fill(Theme.destructive)
                     .frame(width: 4, height: 4)
                     .padding(.leading, 2)
             }
@@ -20,16 +19,13 @@ struct SafeWatchTopBar: View {
         .padding(.horizontal, 22)
         .padding(.vertical, 12)
         .background(
-            ZStack {
-                Maroon.m950.opacity(0.70)
-                Rectangle()
-                    .fill(.ultraThinMaterial)
-            }
-            .ignoresSafeArea(edges: .top)
+            Theme.bg.opacity(0.85)
+                .background(.ultraThinMaterial)
+                .ignoresSafeArea(edges: .top)
         )
         .overlay(alignment: .bottom) {
             Rectangle()
-                .fill(Maroon.m300.opacity(0.10))
+                .fill(Theme.border)
                 .frame(height: 1)
         }
     }
@@ -41,22 +37,19 @@ private struct LocalInferencePill: View {
     var body: some View {
         HStack(spacing: 6) {
             Circle()
-                .fill(Maroon.m200)
+                .fill(Theme.destructive)
                 .frame(width: 6, height: 6)
                 .opacity(pulse ? 0.45 : 1.0)
                 .animation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true), value: pulse)
             Text("LOCAL INFERENCE")
-                .font(.teCaps).tracking(1.8)
-                .foregroundStyle(Maroon.m100)
+                .font(.system(size: 10, weight: .heavy, design: .monospaced))
+                .tracking(1.6)
+                .foregroundStyle(Theme.textMuted)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
-        .background(
-            Capsule().fill(Maroon.m900.opacity(0.40))
-        )
-        .overlay(
-            Capsule().strokeBorder(Maroon.m300.opacity(0.20), lineWidth: 0.5)
-        )
+        .background(Capsule().fill(Theme.muted))
+        .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 0.5))
         .onAppear { pulse = true }
     }
 }

@@ -51,7 +51,7 @@ private struct HomeShell: View {
                     SettingsView(resetOnboarding: $resetOnboarding)
                 }
             }
-            .padding(.top, 56) // leave room for top bar
+            .padding(.top, 56) // room for top bar
 
             SafeWatchTopBar()
 
@@ -89,13 +89,13 @@ private struct TabBar: View {
         .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Maroon.m900.opacity(0.92))
+                .fill(Theme.surface)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(Maroon.m700, lineWidth: 1)
+                .strokeBorder(Theme.border, lineWidth: 1)
         )
-        .shadow(color: Maroon.m950.opacity(0.6), radius: 30, y: 12)
+        .shadow(color: .black.opacity(0.08), radius: 30, y: 12)
         .padding(.horizontal, 22)
         .padding(.bottom, 14)
     }
@@ -110,7 +110,7 @@ private struct TabBar: View {
                 Text(label)
                     .font(.system(size: 10, weight: .bold))
             }
-            .foregroundStyle(tab == t ? Cream.c50 : Maroon.m200)
+            .foregroundStyle(tab == t ? Theme.text : Theme.textMuted)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 6)
         }
@@ -124,16 +124,16 @@ private struct DemoFireButton: View {
             HStack(spacing: 10) {
                 Image(systemName: "bolt.fill")
                 Text("Simulate Tier 3 alert")
-                    .font(.teButton)
+                    .font(.system(size: 16, weight: .bold))
             }
-            .foregroundStyle(Ink)
+            .foregroundStyle(Theme.primaryFg)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 14)
             .background(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Cream.c50)
+                    .fill(Theme.primary)
             )
-            .shadow(color: Maroon.m900.opacity(0.5), radius: 18, x: 0, y: 8)
+            .shadow(color: .black.opacity(0.15), radius: 18, x: 0, y: 8)
         }
     }
 }
