@@ -61,6 +61,19 @@ class Config:
     emergency_dispatch_phone: str = os.getenv("EMERGENCY_DISPATCH_PHONE", "")
     family_phone: str = os.getenv("FAMILY_PHONE", "")
 
+    # iMessage fan-out (macOS-only). When enabled, every tier-2+ event also
+    # sends an iMessage with the description + clip thumbnail to each
+    # recipient. Skips Twilio SMS entirely (no A2P 10DLC registration).
+    imessage_enabled: bool = _bool("IMESSAGE_ENABLED", False)
+    imessage_recipients: tuple[str, ...] = tuple(
+        n.strip()
+        for n in os.getenv("IMESSAGE_RECIPIENTS", "").split(",")
+        if n.strip()
+    )
+    # Whether to include the captured clip mp4 as an attachment on tier 3+
+    # iMessages. tier 2 NOTICE keeps it text-only to stay snappy.
+    imessage_attach_clip: bool = _bool("IMESSAGE_ATTACH_CLIP", True)
+
     # Service
     host: str = os.getenv("HOST", "0.0.0.0")
     port: int = _int("PORT", 8001)

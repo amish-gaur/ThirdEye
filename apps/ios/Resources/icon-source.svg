@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="42%" r="80%">
+      <stop offset="0%" stop-color="#FBF1E7"/>
+      <stop offset="55%" stop-color="#F5E6D3"/>
+      <stop offset="100%" stop-color="#E8D4BC"/>
+    </radialGradient>
+    <radialGradient id="pupilGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#5E1521"/>
+      <stop offset="65%" stop-color="#1F050A"/>
+      <stop offset="100%" stop-color="#120308"/>
+    </radialGradient>
+    <linearGradient id="ringInner" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4A0E18"/>
+      <stop offset="100%" stop-color="#1F050A"/>
+    </linearGradient>
+  </defs>
+
+  <!-- background plate (cream) -->
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+
+  <!-- soft maroon radiance behind the iris -->
+  <circle cx="512" cy="512" r="380" fill="#9A3142" opacity="0.06"/>
+
+  <!-- outer ring -->
+  <circle cx="512" cy="512" r="420" fill="none" stroke="#5E1521" stroke-width="20"/>
+  <!-- middle ring -->
+  <circle cx="512" cy="512" r="320" fill="none" stroke="#4A0E18" stroke-width="22"/>
+  <!-- inner ring -->
+  <circle cx="512" cy="512" r="210" fill="none" stroke="url(#ringInner)" stroke-width="26"/>
+
+  <!-- pupil -->
+  <circle cx="512" cy="512" r="74" fill="url(#pupilGlow)"/>
+  <!-- catchlight on pupil (premium feel) -->
+  <ellipse cx="486" cy="486" rx="22" ry="14" fill="#E5B4BB" opacity="0.55"/>
+
+  <!-- crosshair tick marks -->
+  <g stroke="#5E1521" stroke-width="20" stroke-linecap="round">
+    <line x1="512" y1="46"   x2="512" y2="116"/>
+    <line x1="512" y1="908"  x2="512" y2="978"/>
+    <line x1="46"  y1="512"  x2="116" y2="512"/>
+    <line x1="908" y1="512"  x2="978" y2="512"/>
+  </g>
+
+  <!-- diagonal scan ticks (lighter) -->
+  <g stroke="#9A3142" stroke-width="10" stroke-linecap="round" opacity="0.55">
+    <line x1="200" y1="200" x2="248" y2="248"/>
+    <line x1="824" y1="200" x2="776" y2="248"/>
+    <line x1="200" y1="824" x2="248" y2="776"/>
+    <line x1="824" y1="824" x2="776" y2="776"/>
+  </g>
+</svg>

@@ -1,18 +1,81 @@
-"""Step 2: The router core.
+"""Action-router core. ``execute_action(event_json)`` is the single entry
+point used by `action_router.service` (FastAPI ``POST /event``) and by the
+vision pipeline when it wants to escalate.
 
-`execute_action(event_json)` is the single entry point. Tier-specific behavior:
+WIRING THE THEFT DETECTOR
+-------------------------
+The theft tracker (``vision_pipeline/theft_tracker.py``) fires an event
+whenever its state machine reaches ``THEFT_CONFIRMED``. To plug it in:
 
+    import requests, os
+    requests.post(
+        os.environ["ACTION_ROUTER_URL"],            # e.g. http://127.0.0.1:8001/event
+        json={
+            "tier": 4,                              # 4 = EMERGENCY for confirmed theft
+            "tier_name": "EMERGENCY",
+            "event_id":     "evt_<uuid>",           # any unique string per attempt
+            "incident_id":  "inc_<uuid>",           # stable per real-world incident;
+                                                    # used to dedupe within 3 minutes
+            "behavior_pattern":   "taking_item",    # tier-clamped via the table below
+            "confidence":         0.92,             # in [0,1]; floors below downgrade
+            "scene":              "the front porch",
+            "suspect_description":"tall man in red hoodie and dark jeans",
+            "one_line_summary":   "person took a package and walked away",
+            "time_elapsed":       "just now",
+            "yolo_classes":       ["person", "backpack"],
+            "clip_path":          "./media/clip_inc_<id>.mp4",  # optional iMessage attachment
+        },
+        timeout=10,
+    )
+
+The router does the rest: idempotency, narration, Twilio fan-out, iMessage,
+clip attachment, and a synchronous JSON receipt for logging.
+
+TIER ESCALATION
+---------------
     1 AMBIENT   - log only
-    2 NOTICE    - send SMS to homeowner
-    3 ALERT     - parallel: Claude→ElevenLabs→Twilio Play call to homeowner
-                  + SMS to homeowner (and family if FAMILY_PHONE is set)
-    4 EMERGENCY - parallel Twilio Play calls to dispatch + homeowner + family
+    2 NOTICE    - text-only iMessage fan-out (no call). Optional Twilio SMS.
+    3 ALERT     - one Twilio voice call (homeowner) + iMessage fan-out w/ clip
+    4 EMERGENCY - three parallel voice calls (dispatch + homeowner + family)
+                  + iMessage fan-out w/ clip, all in parallel via ThreadPoolExecutor
 
-Person 2 hardening:
-- Idempotency: same `incident_id` (preferred) or `event_id` arriving twice
-  within DEDUP_WINDOW_SECONDS is ignored. Defends against vision sending the
-  same candidate twice under new event IDs.
-- Defensive tier coercion: accepts int, float, "3", "ALERT".
+Voice = Claude-generated narration → ElevenLabs MP3 in MEDIA_DIR → Twilio
+``<Play>`` of ``PUBLIC_BASE_URL/media/<file>.mp3``. Falls back to ``<Say>``
+with Twilio's stock voice when ElevenLabs is unavailable or PUBLIC_BASE_URL
+is not internet-reachable (e.g. localhost during local dev).
+
+iMessage = AppleScript to Messages.app on this Mac (see ``imessage.py``).
+Sequential per-recipient (Apple drops parallel sends), but the whole fan-out
+is dispatched concurrently with the Twilio call thread so it doesn't add
+latency. Recipients come from ``IMESSAGE_RECIPIENTS`` env (E.164, comma-sep).
+
+CONFIDENCE FLOORS
+-----------------
+``ALERT_CONFIDENCE_FLOOR`` (default 0.35) and ``EMERGENCY_CONFIDENCE_FLOOR``
+(default 0.55) downgrade the tier when the model's confidence is too low.
+Calibrated for Qwen2-VL-2B; raise these for stricter prod deployments.
+
+HARDENING
+---------
+- Idempotency: same ``incident_id`` (preferred) or ``event_id`` arriving
+  twice within DEDUP_WINDOW_SECONDS is ignored. Defends against the vision
+  pipeline emitting the same theft under new event IDs (e.g. multiple
+  frames in the same incident).
+- Defensive tier coercion: accepts int, float, "3", "ALERT" — vision can
+  emit any of these without crashing the router.
+- Behavior-pattern clamping: a ``walking_through`` event tagged tier 4 by
+  upstream still runs as tier 1 (see BEHAVIOR_PATTERN_MAX_TIER). The vision
+  pipeline always wins on ceiling-direction; the router only ever lowers.
+
+TESTING WITHOUT THE VISION PIPELINE
+-----------------------------------
+- ``scripts/send_test_event.py``  - POST a synthetic event and exercise the
+  full router: dedup, narration, ElevenLabs, Twilio, iMessage. The path
+  the friend's theft detector will hit at runtime.
+- ``scripts/test_concurrent_calls.py`` - bypasses the router entirely and
+  fires raw Twilio calls. Useful for tuning the voice script before
+  bothering with end-to-end vision.
+- ``scripts/test_imessage.py`` - macOS Messages.app smoke test only.
 """
 
 from __future__ import annotations
@@ -25,6 +88,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from .config import CONFIG, Config
+from .imessage import IMessageResult, send_imessage_fanout
 from .messaging import SmsResult, send_sms
 from .narration import generate_script
 from .return_flow import ReturnFlowResult, maybe_initiate_return
@@ -279,6 +343,8 @@ def _tier_notice(event: Dict[str, Any], cfg: Config, result: ActionResult) -> Ac
     except Exception as exc:
         log.exception("Tier 2 SMS failed")
         result.errors.append(f"sms: {exc}")
+    # Fan out via iMessage if configured (text-only at tier 2 — keep it snappy).
+    _fanout_imessage(event, cfg, result, attach_clip=False, label="notice")
     return result
 
 
@@ -289,42 +355,11 @@ def _tier_alert(event: Dict[str, Any], cfg: Config, result: ActionResult) -> Act
     script = generate_script(event, cfg)
     result.script = script
     media_url = _try_synthesize(script, cfg, result, prefix="alert_")
-    sms_body = _format_alert_sms_body(event)
-
-    sms_targets = [("homeowner", cfg.homeowner_phone)]
-    if cfg.family_phone:
-        sms_targets.append(("family", cfg.family_phone))
-
-    tasks: List[tuple[str, str, Any]] = [
-        ("call_homeowner", cfg.homeowner_phone, ("call", script, media_url)),
-    ]
-    for label, num in sms_targets:
-        tasks.append((f"sms_{label}", num, ("sms", sms_body, None)))
-
-    with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
-        futures = {}
-        for action_label, to, payload in tasks:
-            kind, body, url = payload
-            if kind == "call":
-                fut = pool.submit(_place_call_safe, to, body, url, cfg)
-            else:
-                fut = pool.submit(_send_sms_safe, to, body, cfg)
-            futures[fut] = (action_label, kind)
-
-        for fut in as_completed(futures):
-            action_label, kind = futures[fut]
-            try:
-                outcome = fut.result()
-                if outcome is None:
-                    continue
-                if kind == "call":
-                    result.calls.append(outcome)
-                else:
-                    result.messages.append(outcome)
-                result.actions.append(action_label)
-            except Exception as exc:
-                log.exception("Tier 3 %s failed", action_label)
-                result.errors.append(f"{action_label}: {exc}")
+    call = _call(cfg.homeowner_phone, script, media_url, cfg, result)
+    if call:
+        result.actions.append("call_homeowner")
+    # Fan out iMessage alongside the call so the team has a written record + clip.
+    _fanout_imessage(event, cfg, result, attach_clip=cfg.imessage_attach_clip, label="alert")
     return result
 
 
@@ -332,6 +367,10 @@ def _tier_emergency(event: Dict[str, Any], cfg: Config, result: ActionResult) ->
     script = generate_script(event, cfg)
     result.script = script
     media_url = _try_synthesize(script, cfg, result, prefix="emergency_")
+    # Fan out iMessage in parallel with the calls. iMessage delivery is faster
+    # than the call ringing so the team has the clip on their phones the moment
+    # they pick up.
+    _fanout_imessage(event, cfg, result, attach_clip=cfg.imessage_attach_clip, label="emergency")
 
     targets = [
         ("dispatch", cfg.emergency_dispatch_phone),
@@ -423,6 +462,84 @@ def _place_call_safe(
     return None
 
 
+def _format_imessage_body(event: Dict[str, Any]) -> str:
+    """Compose a one-shot iMessage body. Short, scannable, severity-led.
+
+    Keeps the message under 280 chars so it doesn't wrap awkwardly on the
+    notification preview while still surfacing the description + scene.
+    """
+    tier = _coerce_tier(event.get("tier"))
+    label = TIER_LABELS.get(tier, "ALERT")
+    icon = {1: "•", 2: "•", 3: "🔴", 4: "🚨"}.get(tier, "•")
+    summary = (event.get("one_line_summary") or "Activity at your home.").strip()
+    desc = (event.get("suspect_description") or "").strip()
+    scene = (event.get("scene") or "").strip()
+    confidence = _safe_confidence(event.get("confidence"))
+
+    parts = [f"{icon} ThirdEye · T{tier} {label}", summary]
+    if scene and scene.lower() not in summary.lower():
+        parts.append(f"on {scene}")
+    if desc and desc.lower() not in summary.lower():
+        parts.append(f"({desc})")
+    parts.append(f"confidence {int(confidence * 100)}%")
+    return "  ·  ".join(parts)
+
+
+def _fanout_imessage(
+    event: Dict[str, Any],
+    cfg: Config,
+    result: ActionResult,
+    *,
+    attach_clip: bool,
+    label: str,
+) -> None:
+    """Send the same iMessage to every recipient in IMESSAGE_RECIPIENTS.
+
+    No-ops when iMessage is disabled or no recipients are configured. Errors
+    on individual sends are logged but don't fail the action — calls remain
+    the primary signal path; iMessage is a parallel best-effort channel.
+    """
+    if not cfg.imessage_enabled:
+        return
+    if not cfg.imessage_recipients:
+        log.info("iMessage enabled but IMESSAGE_RECIPIENTS empty — skipping")
+        return
+
+    body = _format_imessage_body(event)
+    attachment = event.get("clip_path") if attach_clip else None
+    if attachment:
+        # vision_pipeline writes paths as './media/clip_inc_...mp4' relative to
+        # CWD. Resolve so AppleScript gets an absolute path.
+        from pathlib import Path as _Path
+        attachment = str(_Path(attachment).expanduser().resolve())
+
+    if cfg.dry_run:
+        log.info(
+            "[dry_run] would iMessage %d recipients (%s): %s%s",
+            len(cfg.imessage_recipients),
+            label,
+            body,
+            f" + {attachment}" if attachment else "",
+        )
+        result.actions.append(f"imessage_dry_run_{label}")
+        return
+
+    msgs = send_imessage_fanout(list(cfg.imessage_recipients), body, attachment=attachment)
+    result.messages.extend(
+        SmsResult(to=m.to, sid="imessage", body=body, dry_run=False)
+        for m in msgs
+        if m.sent
+    )
+    sent_count = sum(1 for m in msgs if m.sent)
+    fail_count = len(msgs) - sent_count
+    if sent_count:
+        result.actions.append(f"imessage_{sent_count}/{len(msgs)}")
+    if fail_count:
+        for m in msgs:
+            if not m.sent:
+                result.errors.append(f"imessage[{m.to}]: {m.error}")
+
+
 def _format_sms_body(event: Dict[str, Any]) -> str:
     summary = event.get("one_line_summary", "Activity at your home.")
     desc = event.get("suspect_description", "")
@@ -430,29 +547,6 @@ def _format_sms_body(event: Dict[str, Any]) -> str:
     if desc:
         return f"SafeWatch: {summary} ({desc}) — {elapsed}. No action needed."
     return f"SafeWatch: {summary} — {elapsed}. No action needed."
-
-
-def _format_alert_sms_body(event: Dict[str, Any]) -> str:
-    summary = event.get("one_line_summary", "Possible theft at your home.")
-    desc = event.get("suspect_description", "")
-    elapsed = event.get("time_elapsed", "just now")
-    if desc:
-        return (
-            f"SafeWatch ALERT: {summary} ({desc}) — {elapsed}. "
-            "Active alert; we are calling you now."
-        )
-    return (
-        f"SafeWatch ALERT: {summary} — {elapsed}. "
-        "Active alert; we are calling you now."
-    )
-
-
-def _send_sms_safe(to: str, body: str, cfg: Config) -> Optional[SmsResult]:
-    try:
-        return send_sms(to, body, config=cfg)
-    except Exception:
-        log.exception("SMS to %s failed", to)
-        raise
 
 
 def _coerce_tier(value: Any) -> int:
