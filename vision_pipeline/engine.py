@@ -39,6 +39,7 @@ except ImportError:  # pragma: no cover - depends on the installed ultralytics v
 from .config import CONFIG, Config
 from .events import VISION_LANGUAGE_PROMPT, build_event, evaluate_classifier_output
 from .publisher import post_event
+from .theft_alert import trigger_theft_alert
 from .theft_tracker import (
     PackageDetection,
     PackageTheftTracker,
@@ -1219,7 +1220,7 @@ class VisionEngine:
                     )
                     self._update_last_classification(event)
                     _print_pretty_event(event)
-                    self._publish_event(event)
+                    self._fire_theft_alert(event, frame)
                     fired = True
                     self._mark_incident_emitted(captured_at)
                     self._last_fire_at = captured_at
@@ -1938,7 +1939,7 @@ class VisionEngine:
                 )
                 self._update_last_classification(event)
                 _print_pretty_event(event)
-                self._publish_event(event)
+                self._fire_theft_alert(event, request.frame_bgr)
             except Exception:
                 log.exception("Background Qwen classification failed.")
             finally:
@@ -2258,6 +2259,39 @@ class VisionEngine:
                 "Dropping event %s because event publisher is behind.",
                 event_payload.get("event_id", "<unknown>"),
             )
+
+    def _fire_theft_alert(self, event: dict[str, Any], frame_bgr: Any) -> None:
+        """Hand a confirmed-theft event to the action router.
+
+        When ACTION_ROUTER_BASE_URL is set we use the spec path: save the
+        suspect frame, POST it to /upload, then fire a tier-4 EMERGENCY
+        event with `clip_path` set so the router can attach it to the
+        iMessage fan-out. When the env var isn't set we fall back to the
+        legacy publisher (config.action_router_url) so dev/test still work.
+        """
+        if not self.config.post_events:
+            return
+        if not os.environ.get("ACTION_ROUTER_BASE_URL"):
+            self._publish_event(event)
+            return
+        try:
+            trigger_theft_alert(
+                frame_bgr=frame_bgr,
+                incident_id=str(event.get("incident_id") or event.get("event_id", "")),
+                suspect_description=str(event.get("suspect_description", "")),
+                one_line_summary=str(event.get("one_line_summary", "")),
+                scene=str(event.get("scene", "the camera view")),
+                confidence=float(event.get("confidence", 0.6)),
+                behavior_pattern=str(event.get("behavior_pattern", "taking_item")),
+                yolo_classes=event.get("yolo_classes") or ["person"],
+                time_elapsed=str(event.get("time_elapsed", "just now")),
+            )
+        except Exception as exc:
+            log.warning(
+                "trigger_theft_alert failed; falling back to legacy publisher: %s",
+                exc,
+            )
+            self._publish_event(event)
 
     def _publish_event_sync(self, event: dict[str, Any]) -> None:
         try:
