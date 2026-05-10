@@ -12,6 +12,8 @@ uvicorn[standard]>=0.30
 pydantic>=2.7
 python-dotenv>=1.0
 requests>=2.32
+websockets>=12.0   # phone-camera WebSocket ingest (used by FastAPI/uvicorn)
+qrcode>=7.4        # QR pairing UI (renders PNGs via Pillow)
 
 # Vision pipeline
 opencv-python>=4.10

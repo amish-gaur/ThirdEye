@@ -173,10 +173,16 @@ def frame_to_pil(frame_bgr: Any) -> Image.Image:
 
 
 def parse_capture_source(raw_source: str) -> int | str:
-    raw_source = raw_source.strip()
-    if raw_source.isdigit():
-        return int(raw_source)
-    return raw_source
+    """Resolve a CAMERA_SOURCE string into a `cv2.VideoCapture` argument.
+
+    Delegates to `vision_pipeline.source_resolver` so the same logic can be
+    unit-tested without touching any heavy imports. Supports the new
+    `phone://` shortcuts (paired phone camera streamed via the action
+    router's MJPEG endpoint) on top of the existing OpenCV inputs.
+    """
+    from .source_resolver import resolve_camera_source
+
+    return resolve_camera_source(raw_source)
 
 
 def _box_center(box: tuple[float, float, float, float]) -> tuple[float, float]:
@@ -1521,7 +1527,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--source",
         default=CONFIG.camera_source,
-        help="Camera source. Use 0 for the local webcam or an RTSP URL.",
+        help=(
+            "Camera source. Use 0 for the local webcam, an RTSP/HTTP URL, "
+            "or a `phone[:token]` shortcut to consume a paired phone camera "
+            "(e.g. `phone`, `phone:lobby`)."
+        ),
     )
     parser.add_argument(
         "--hide-window",

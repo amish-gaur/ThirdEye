@@ -8,8 +8,10 @@ from typing import Any, Dict
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+
+from phone_camera import create_phone_camera_router
 
 from .config import CONFIG
 from .router import execute_action
@@ -24,6 +26,18 @@ def create_app() -> FastAPI:
     media_dir = CONFIG.ensure_media_dir()
     app.mount("/media", StaticFiles(directory=str(media_dir)), name="media")
 
+    # Phone-as-third-eye: pair page (/pair), capture page (/cam/{token}),
+    # WebSocket ingest, MJPEG egress consumed by the vision engine.
+    app.include_router(
+        create_phone_camera_router(
+            public_base_url_provider=lambda: CONFIG.public_base_url
+        )
+    )
+
+    @app.get("/", include_in_schema=False)
+    def root() -> RedirectResponse:
+        return RedirectResponse(url="/pair")
+
     @app.get("/health")
     def health() -> Dict[str, Any]:
         return {
@@ -34,6 +48,7 @@ def create_app() -> FastAPI:
             "elevenlabs_play_enabled": CONFIG.elevenlabs_play_enabled(),
             "public_base_url": CONFIG.public_base_url,
             "twilio_configured": bool(CONFIG.twilio_account_sid),
+            "pair_url": f"{CONFIG.public_base_url}/pair",
         }
 
     @app.post("/event")
