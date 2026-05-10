@@ -389,7 +389,7 @@ function Dashboard() {
           style={{ color: C.deep }}
         >
           Severity-aware sensors. Frames stay on-device. We escalate only when
-          the world stops being calm - ambient, notice, alert, emergency.
+          the world stops being calm: ambient, notice, alert, emergency.
         </p>
 
         <div className="mt-8 flex items-center gap-3">

@@ -35,7 +35,7 @@ export default function Onboarding() {
         {step === 0 && (
           <Stage
             title="Sign in with Clerk"
-            body="Production auth - works the same on web and mobile. We never store passwords ourselves."
+            body="Production auth: works the same on web and mobile. We never store passwords ourselves."
             cta="Continue"
             onContinue={() => setStep(1)}
           />
@@ -73,7 +73,7 @@ export default function Onboarding() {
                     onClick={() => setStep(2)}
                     className="mt-5 rounded-full bg-cream-50 px-5 py-2 text-[13px] font-medium text-maroon-900 hover:bg-cream-100"
                   >
-                    Node paired - continue
+                    Node paired. Continue
                   </button>
                 </div>
               </div>
